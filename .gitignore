@@ -10,3 +10,14 @@ wheels/
 .venv
 
 .env
+
+.ruff_cache
+.agents
+recruitment_ai/
+
+uploads/
+workspace/
+
+.codex
+
+skills-lock.json

@@ -23,6 +23,129 @@ async function loadSampleResume(sampleId) {
   return new File([blob], filename, { type: blob.type || "text/plain" });
 }
 
+function formatEventType(type) {
+  return type.replaceAll("_", " ");
+}
+
+function formatStage(stage) {
+  return (stage || "candidate_analysis").replaceAll("_", " ");
+}
+
+function formatCurrency(value) {
+  if (typeof value !== "number") {
+    return null;
+  }
+  return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
+}
+
+function getStageGroups(events) {
+  const groups = [];
+  const byStage = new Map();
+
+  for (const event of events) {
+    const stageKey = event.stage || "candidate_analysis";
+    if (!byStage.has(stageKey)) {
+      const group = { stage: stageKey, events: [] };
+      byStage.set(stageKey, group);
+      groups.push(group);
+    }
+    byStage.get(stageKey).events.push(event);
+  }
+
+  return groups.map((group) => {
+    const latestEvent = group.events[group.events.length - 1];
+    const hasFailure = group.events.some((event) => event.type.includes("failed"));
+    const hasGuardrailFailure = group.events.some(
+      (event) => event.type === "guardrail_completed" && event.success === false,
+    );
+    const llmCalls = group.events.filter((event) => event.type === "llm_call_completed");
+    const totalCost = llmCalls.reduce(
+      (sum, event) => sum + (typeof event.estimated_cost_usd === "number" ? event.estimated_cost_usd : 0),
+      0,
+    );
+    const totalTokens = llmCalls.reduce(
+      (sum, event) => sum + (event.usage?.total_tokens || 0),
+      0,
+    );
+
+    return {
+      ...group,
+      latestEvent,
+      hasFailure,
+      hasGuardrailFailure,
+      llmCallCount: llmCalls.length,
+      totalCost,
+      totalTokens,
+    };
+  });
+}
+
+function StepPill({ event }) {
+  const isFailure = event.type.includes("failed");
+  const isGuardrailWarning = event.type === "guardrail_completed" && event.success === false;
+  const hasDetails =
+    event.message ||
+    event.error ||
+    event.task_name ||
+    event.guardrail_type ||
+    event.retry_count !== undefined ||
+    event.model ||
+    event.usage ||
+    event.estimated_cost_usd !== undefined ||
+    event.finish_reason ||
+    event.agent_role;
+
+  const pillClass = isFailure
+    ? "bg-red-100 text-red-700"
+    : isGuardrailWarning
+      ? "bg-ember-100 text-ember-700"
+      : "bg-moss-100 text-moss-700";
+
+  if (!hasDetails) {
+    return (
+      <span className={`inline-flex rounded-full px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] ${pillClass}`}>
+        {formatEventType(event.type)}
+      </span>
+    );
+  }
+
+  const usage = event.usage || {};
+
+  return (
+    <details className="group inline-block">
+      <summary
+        className={`list-none cursor-pointer rounded-full px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] ${pillClass}`}
+      >
+        {formatEventType(event.type)}
+      </summary>
+      <div className="mt-3 w-[min(26rem,80vw)] rounded-2xl border border-moss-900/10 bg-white p-4 text-sm text-moss-700 shadow-sm">
+        {event.message ? <p>{event.message}</p> : null}
+        <div className="mt-3 grid gap-2">
+          {event.agent_role ? <p><span className="font-medium text-moss-900">Agent:</span> {event.agent_role}</p> : null}
+          {event.task_name ? <p><span className="font-medium text-moss-900">Task:</span> {event.task_name}</p> : null}
+          {event.guardrail_type ? <p><span className="font-medium text-moss-900">Guardrail:</span> {event.guardrail_type}</p> : null}
+          {event.retry_count !== undefined ? <p><span className="font-medium text-moss-900">Retry:</span> {event.retry_count}</p> : null}
+          {event.model ? <p><span className="font-medium text-moss-900">Model:</span> {event.model}</p> : null}
+          {event.finish_reason ? <p><span className="font-medium text-moss-900">Finish:</span> {event.finish_reason}</p> : null}
+          {event.call_id ? <p><span className="font-medium text-moss-900">Call ID:</span> {event.call_id}</p> : null}
+          {usage.total_tokens ? (
+            <p>
+              <span className="font-medium text-moss-900">Tokens:</span>{" "}
+              total {usage.total_tokens}, prompt {usage.prompt_tokens || 0}, completion {usage.completion_tokens || 0}
+              {usage.cached_prompt_tokens ? `, cached ${usage.cached_prompt_tokens}` : ""}
+            </p>
+          ) : null}
+          {event.estimated_cost_usd !== undefined && event.estimated_cost_usd !== null ? (
+            <p><span className="font-medium text-moss-900">Estimated cost:</span> {formatCurrency(event.estimated_cost_usd)}</p>
+          ) : null}
+          {event.error ? <p className="text-red-700"><span className="font-medium">Error:</span> {event.error}</p> : null}
+          <p><span className="font-medium text-moss-900">At:</span> {event.timestamp}</p>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 export default function App() {
   const [health, setHealth] = useState("loading");
   const [samples, setSamples] = useState([]);
@@ -37,6 +160,8 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const [runInfo, setRunInfo] = useState(null);
+  const [progressEvents, setProgressEvents] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -87,6 +212,8 @@ export default function App() {
     event.preventDefault();
     setError("");
     setAnalysis(null);
+    setRunInfo(null);
+    setProgressEvents([]);
     if (!selectedFile) {
       setError("Choose your own CV or load a sample resume before running the orchestration.");
       return;
@@ -102,14 +229,35 @@ export default function App() {
       formData.append("skills_csv", skillsCsv);
       formData.append("job_description", jobDescription);
 
-      const data = await fetch(`${apiBase}/api/orchestration/analyze`, {
+      const data = await fetch(`${apiBase}/api/orchestration/runs`, {
         method: "POST",
         body: formData,
       }).then(parseJson);
-      setAnalysis(data);
+      setRunInfo(data);
+
+      const eventSource = new EventSource(`${apiBase}/api/orchestration/runs/${data.run_id}/events`);
+      eventSource.onmessage = async (message) => {
+        const payload = JSON.parse(message.data);
+        setProgressEvents((current) => [...current, payload]);
+
+        if (payload.type === "run_completed" || payload.type === "run_failed") {
+          eventSource.close();
+          const runPayload = await fetch(`${apiBase}/api/orchestration/runs/${data.run_id}`).then(parseJson);
+          if (runPayload.status === "completed") {
+            setAnalysis(runPayload.result);
+          } else {
+            setError(runPayload.error || "The orchestration run failed.");
+          }
+          setIsSubmitting(false);
+        }
+      };
+      eventSource.onerror = () => {
+        eventSource.close();
+        setError("The live progress stream disconnected before the run completed.");
+        setIsSubmitting(false);
+      };
     } catch (err) {
       setError(err.message);
-    } finally {
       setIsSubmitting(false);
     }
   }
@@ -118,6 +266,8 @@ export default function App() {
   const trace = analysis?.trace || [];
   const matchSummary = analysis?.matching?.jd_match_overview?.sections?.overall_ai_analysis || null;
   const extractionNotes = analysis?.extraction?.structured_profile?.extraction_notes || [];
+  const stageGroups = getStageGroups(progressEvents);
+  const currentStage = stageGroups.length ? stageGroups[stageGroups.length - 1] : null;
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -145,6 +295,12 @@ export default function App() {
             <span className="meta-label">Model mode</span>
             <strong className="text-lg text-moss-900">
               {analysis ? `${analysis.model_provider} / ${analysis.model_mode}` : "pending"}
+            </strong>
+          </div>
+          <div>
+            <span className="meta-label">Current stage</span>
+            <strong className="text-lg text-moss-900">
+              {currentStage ? formatStage(currentStage.stage) : "idle"}
             </strong>
           </div>
         </aside>
@@ -284,6 +440,11 @@ export default function App() {
                 <p className="text-sm text-moss-600">
                   Reviewer-facing result with explicit model behavior.
                 </p>
+                {runInfo ? (
+                  <p className="mt-1 text-xs uppercase tracking-[0.16em] text-moss-500">
+                    Run {runInfo.run_id}
+                  </p>
+                ) : null}
               </div>
               {analysis ? (
                 <span
@@ -349,15 +510,62 @@ export default function App() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-semibold text-moss-900">Trace</h2>
-                <p className="text-sm text-moss-600">Each handoff is visible and attributable.</p>
+                <p className="text-sm text-moss-600">Live grouped stepper with revealable event details.</p>
               </div>
               <span className="rounded-full bg-moss-100 px-3 py-1 text-[0.72rem] uppercase tracking-[0.16em] text-moss-700">
-                {trace.length} steps
+                {progressEvents.length || trace.length} events
               </span>
             </div>
 
             <div className="mt-4 space-y-3">
-              {trace.length ? (
+              {stageGroups.length ? (
+                stageGroups.map((group) => (
+                  <article
+                    className={`rounded-2xl border p-4 ${
+                      group.hasFailure
+                        ? "border-red-200 bg-red-50/70"
+                        : group.hasGuardrailFailure
+                          ? "border-ember-200 bg-ember-100/50"
+                          : "border-moss-900/10 bg-white/55"
+                    }`}
+                    key={group.stage}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-semibold capitalize text-moss-900">{formatStage(group.stage)}</h3>
+                        <p className="mt-1 text-sm text-moss-600">
+                          {group.latestEvent?.message || group.latestEvent?.label || formatEventType(group.latestEvent?.type || "step")}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
+                          {group.events.length} events
+                        </span>
+                        {group.llmCallCount ? (
+                          <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
+                            {group.llmCallCount} model calls
+                          </span>
+                        ) : null}
+                        {group.totalTokens ? (
+                          <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
+                            {group.totalTokens} tokens
+                          </span>
+                        ) : null}
+                        {group.totalCost > 0 ? (
+                          <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
+                            {formatCurrency(group.totalCost)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {group.events.map((event) => (
+                        <StepPill event={event} key={`${event.sequence}-${event.type}`} />
+                      ))}
+                    </div>
+                  </article>
+                ))
+              ) : trace.length ? (
                 trace.map((step) => (
                   <article
                     className="rounded-2xl border border-moss-900/10 bg-white/55 p-4"

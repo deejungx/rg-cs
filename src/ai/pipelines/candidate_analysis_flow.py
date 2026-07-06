@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.services.orchestration_progress_service import orchestration_progress_service
+from src.ai.events.progress_listener import ensure_progress_listener
+from src.ai.events.runtime_context import current_run_id, current_stage
 from src.ai.pipelines.cv_extraction_flow import run_cv_extraction_flow
 from src.ai.pipelines.cv_matching_flow import run_cv_matching_flow
 from src.ai.providers import get_model_provider
@@ -234,6 +237,7 @@ def _build_trace_step(
 
 def run_candidate_analysis(
     *,
+    analysis_id: str | None = None,
     candidate_id: str,
     source_path: str,
     filename: str,
@@ -244,8 +248,9 @@ def run_candidate_analysis(
     location: str = "",
     skills_csv: str = "",
 ) -> CandidateAnalysisResponse:
+    ensure_progress_listener()
     provider = get_model_provider()
-    analysis_id = f"analysis-{uuid4()}"
+    analysis_id = analysis_id or f"analysis-{uuid4()}"
     vacancy = _build_vacancy_data(
         title=job_title,
         description=job_description,
@@ -255,50 +260,105 @@ def run_candidate_analysis(
     )
 
     trace: list[ExecutionTraceStep] = []
+    run_token = current_run_id.set(analysis_id)
 
-    extraction_started = _utc_now()
-    extraction_payload = run_cv_extraction_flow(
-        candidate_id=candidate_id,
-        source_path=source_path,
-        filename=filename,
-        content_type=content_type,
-    )
-    extraction_ended = _utc_now()
-    extraction = CvExtractionResponse.model_validate(extraction_payload)
-    trace.append(
-        _build_trace_step(
-            step="cv_extraction",
-            agent="Resume Extraction Specialist",
-            status="completed",
-            input_summary=f"Uploaded file {filename} parsed and validated before structuring.",
-            output_summary=(
-                "Structured candidate profile generated."
-                if extraction.structured_profile
-                else "No structured profile returned."
-            ),
-            model_mode=provider.mode,
-            started_at=extraction_started,
-            ended_at=extraction_ended,
-            validation_ok=extraction.validation.is_resume,
-            validation_message=extraction.validation.reason,
+    try:
+        try:
+            orchestration_progress_service.publish_event(
+                analysis_id,
+                {
+                    "run_id": analysis_id,
+                    "type": "run_started",
+                    "label": "candidate_analysis",
+                    "stage": "candidate_analysis",
+                    "message": f"Started orchestration for {filename}",
+                },
+            )
+        except Exception:
+            pass
+        current_stage_token = current_stage.set("cv_extraction")
+        extraction_started = _utc_now()
+        extraction_payload = run_cv_extraction_flow(
+            candidate_id=candidate_id,
+            source_path=source_path,
+            filename=filename,
+            content_type=content_type,
         )
-    )
+        extraction_ended = _utc_now()
+        current_stage.reset(current_stage_token)
+        extraction = CvExtractionResponse.model_validate(extraction_payload)
+        trace.append(
+            _build_trace_step(
+                step="cv_extraction",
+                agent="Resume Extraction Specialist",
+                status="completed",
+                input_summary=f"Uploaded file {filename} parsed and validated before structuring.",
+                output_summary=(
+                    "Structured candidate profile generated."
+                    if extraction.structured_profile
+                    else "No structured profile returned."
+                ),
+                model_mode=provider.mode,
+                started_at=extraction_started,
+                ended_at=extraction_ended,
+                validation_ok=extraction.validation.is_resume,
+                validation_message=extraction.validation.reason,
+            )
+        )
 
-    if extraction.structured_profile is None or not extraction.validation.is_resume:
+        if extraction.structured_profile is None or not extraction.validation.is_resume:
+            trace.append(
+                _build_trace_step(
+                    step="cv_matching",
+                    agent="Match Analyst",
+                    status="skipped",
+                    input_summary="Matching requires a validated resume and structured profile.",
+                    output_summary="Matching skipped because extraction did not yield a valid resume profile.",
+                    model_mode=provider.mode,
+                    started_at=extraction_ended,
+                    ended_at=_utc_now(),
+                    validation_ok=False,
+                    validation_message="Upstream validation failed.",
+                )
+            )
+            return CandidateAnalysisResponse(
+                analysis_id=analysis_id,
+                candidate_id=candidate_id,
+                model_provider=provider.name,
+                model_mode=provider.mode,
+                provider_reason=provider.reason,
+                extraction=extraction,
+                vacancy=vacancy,
+                matching=None,
+                trace=trace,
+            )
+
+        matching_started = _utc_now()
+        current_stage_token = current_stage.set("cv_matching")
+        matching_request = CVMatchingRequest(
+            cv_data=_profile_to_cv_data(
+                candidate_id=candidate_id,
+                profile=extraction.structured_profile,
+            ),
+            vacancy_data=vacancy,
+        )
+        matching_payload = run_cv_matching_flow(matching_request)
+        matching_ended = _utc_now()
+        current_stage.reset(current_stage_token)
+        matching = CVMatchingResponse.model_validate(matching_payload)
         trace.append(
             _build_trace_step(
                 step="cv_matching",
                 agent="Match Analyst",
-                status="skipped",
-                input_summary="Matching requires a validated resume and structured profile.",
-                output_summary="Matching skipped because extraction did not yield a valid resume profile.",
+                status="completed",
+                input_summary="Structured candidate profile and vacancy contract were compared.",
+                output_summary="Match score, strengths, gaps, and interview guidance produced.",
                 model_mode=provider.mode,
-                started_at=extraction_ended,
-                ended_at=_utc_now(),
-                validation_ok=False,
-                validation_message="Upstream validation failed.",
+                started_at=matching_started,
+                ended_at=matching_ended,
             )
         )
+
         return CandidateAnalysisResponse(
             analysis_id=analysis_id,
             candidate_id=candidate_id,
@@ -307,42 +367,8 @@ def run_candidate_analysis(
             provider_reason=provider.reason,
             extraction=extraction,
             vacancy=vacancy,
-            matching=None,
+            matching=matching,
             trace=trace,
         )
-
-    matching_started = _utc_now()
-    matching_request = CVMatchingRequest(
-        cv_data=_profile_to_cv_data(
-            candidate_id=candidate_id,
-            profile=extraction.structured_profile,
-        ),
-        vacancy_data=vacancy,
-    )
-    matching_payload = run_cv_matching_flow(matching_request)
-    matching_ended = _utc_now()
-    matching = CVMatchingResponse.model_validate(matching_payload)
-    trace.append(
-        _build_trace_step(
-            step="cv_matching",
-            agent="Match Analyst",
-            status="completed",
-            input_summary="Structured candidate profile and vacancy contract were compared.",
-            output_summary="Match score, strengths, gaps, and interview guidance produced.",
-            model_mode=provider.mode,
-            started_at=matching_started,
-            ended_at=matching_ended,
-        )
-    )
-
-    return CandidateAnalysisResponse(
-        analysis_id=analysis_id,
-        candidate_id=candidate_id,
-        model_provider=provider.name,
-        model_mode=provider.mode,
-        provider_reason=provider.reason,
-        extraction=extraction,
-        vacancy=vacancy,
-        matching=matching,
-        trace=trace,
-    )
+    finally:
+        current_run_id.reset(run_token)

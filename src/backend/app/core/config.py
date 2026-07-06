@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     openai_input_token_cost_per_million_usd: float | None = None
     openai_cached_input_token_cost_per_million_usd: float | None = None
     openai_output_token_cost_per_million_usd: float | None = None
+    orchestration_run_ttl_seconds: int = 86400
 
 
 @lru_cache

@@ -1,7 +1,15 @@
+import os
+import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+test_home = Path("/tmp/rg-cs-test-home")
+test_home.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("HOME", str(test_home))
+os.environ.setdefault("XDG_DATA_HOME", str(test_home / ".local" / "share"))
 
 from app.core.config import settings
 from app.main import app

@@ -3,12 +3,15 @@ from pathlib import Path
 from crewai.flow.flow import Flow, listen, start
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
 from app.services.file_parser import file_parser_service
+from app.services.pii_redaction_service import pii_redaction_service
 from app.services.workspace_service import workspace_service
 from src.ai.crews.cv_extraction_crew import CvExtractionCrew
 from src.ai.prompts.cv_extraction import CV_EXTRACTION_PROMPT, RESUME_VALIDATION_PROMPT
 from src.ai.tracing.phoenix import flush_phoenix, traced_operation
 from src.ai.tracing.run_logger import append_log
+from src.shared import CrewAIRunLimits
 from src.shared.schemas import (
     CandidateArtifacts,
     ComprehensiveCvProfile,
@@ -32,25 +35,32 @@ class CvExtractionState(BaseModel):
 
 class CvExtractionFlow(Flow[CvExtractionState]):
     def __init__(
-        self, *, candidate_id: str, source_path: str, filename: str, content_type: str
+        self,
+        *,
+        candidate_id: str,
+        source_path: str,
+        filename: str,
+        content_type: str,
+        run_limits: CrewAIRunLimits | None = None,
     ) -> None:
         super().__init__()
         self.state.candidate_id = candidate_id
         self.state.source_path = source_path
         self.state.filename = filename
         self.state.content_type = content_type
-        self.crew = CvExtractionCrew()
+        self.crew = CvExtractionCrew(run_limits=run_limits)
 
     @start()
     def parse_document(self) -> DocumentParseResult:
         parsed = file_parser_service.parse_path(Path(self.state.source_path))
+        parsed = pii_redaction_service.redact_parse_result(parsed)
         self.state.parsed = parsed
         return parsed
 
     @listen(parse_document)
     def validate_document(self, parsed: DocumentParseResult) -> ResumeValidationResult:
         validation = self.crew.validate_resume(
-            RESUME_VALIDATION_PROMPT.format(document_text=parsed.text[:12000])
+            RESUME_VALIDATION_PROMPT.format(document_text=parsed.source_text[:12000])
         )
         self.state.validation = validation
         return validation
@@ -69,7 +79,9 @@ class CvExtractionFlow(Flow[CvExtractionState]):
             return profile
 
         profile = self.crew.extract_profile(
-            CV_EXTRACTION_PROMPT.format(document_text=self.state.parsed.text[:20000])
+            CV_EXTRACTION_PROMPT.format(
+                document_text=self.state.parsed.source_text[:20000]
+            )
         )
         self.state.structured_profile = profile
         return profile
@@ -140,6 +152,9 @@ class CvExtractionFlow(Flow[CvExtractionState]):
                     "validation": self.state.validation.model_dump(),
                     "parser": self.state.parsed.model_dump(),
                     "token_usage": self.crew.token_usage,
+                    "estimated_cost_usd": self.crew.estimated_cost_usd,
+                    "elapsed_seconds": self.crew.elapsed_seconds,
+                    "run_limits": self.crew.run_limits.model_dump(),
                     "structured_markdown_path": artifacts.structured_markdown_path,
                     "flow_state_id": self.state.id,
                 },
@@ -152,6 +167,8 @@ class CvExtractionFlow(Flow[CvExtractionState]):
                 "candidate_id": self.state.candidate_id,
                 "validated": self.state.validation.is_resume,
                 "token_usage": self.crew.token_usage,
+                "estimated_cost_usd": self.crew.estimated_cost_usd,
+                "elapsed_seconds": self.crew.elapsed_seconds,
             },
         )
 
@@ -166,8 +183,26 @@ class CvExtractionFlow(Flow[CvExtractionState]):
 
 
 def run_cv_extraction_flow(
-    *, candidate_id: str, source_path: str, filename: str, content_type: str
+    *,
+    candidate_id: str,
+    source_path: str,
+    filename: str,
+    content_type: str,
+    max_cost_usd: float | None = None,
+    max_latency_seconds: float | None = None,
 ) -> dict[str, object]:
+    run_limits = CrewAIRunLimits(
+        max_cost_usd=(
+            settings.crewai_run_max_cost_usd
+            if max_cost_usd is None
+            else max_cost_usd
+        ),
+        max_latency_seconds=(
+            settings.crewai_run_max_latency_seconds
+            if max_latency_seconds is None
+            else max_latency_seconds
+        ),
+    )
     try:
         with traced_operation(
             "cv_extraction_flow",
@@ -175,6 +210,7 @@ def run_cv_extraction_flow(
                 "candidate_id": candidate_id,
                 "source_file": filename,
                 "content_type": content_type,
+                "run_limits": run_limits.model_dump(),
             },
         ):
             flow = CvExtractionFlow(
@@ -182,6 +218,7 @@ def run_cv_extraction_flow(
                 source_path=source_path,
                 filename=filename,
                 content_type=content_type,
+                run_limits=run_limits,
             )
             return flow.kickoff()
     finally:

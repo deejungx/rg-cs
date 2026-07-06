@@ -57,7 +57,7 @@ def test_phoenix_uses_event_and_openai_instrumentation(monkeypatch) -> None:
     assert phoenix.initialize_phoenix() is provider
     assert calls["register"] == {
         "project_name": "default",
-        "endpoint": "http://phoenix:6006/v1/traces",
+        "endpoint": phoenix._trace_endpoint(phoenix.settings.phoenix_collector_endpoint),
         "batch": True,
         "set_global_tracer_provider": False,
         "verbose": False,

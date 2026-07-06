@@ -3,7 +3,7 @@ from celery import Celery
 from app.core.config import settings
 
 celery_app = Celery(
-    "ai_match_scaffold",
+    "auto_recruit_ai",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
 )

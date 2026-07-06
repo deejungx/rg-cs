@@ -1,0 +1,32 @@
+{
+  "samples": [
+    {
+      "id": "happy-fullstack",
+      "label": "Happy Path Full Stack",
+      "difficulty": "good",
+      "description": "Clear resume with relevant backend and frontend experience.",
+      "resume_path": "data/good/happy_path_fullstack_resume.txt",
+      "job": {
+        "job_title": "Senior Full Stack Engineer",
+        "company_name": "ABC Company",
+        "location": "Kathmandu",
+        "skills_csv": "Python, FastAPI, React, Docker, Redis, Celery, Tailwind",
+        "job_description": "Lead development of a browser-based AI workflow application. Own FastAPI services, React frontend architecture, background jobs, and deployment hygiene. Hybrid full-time role with emphasis on cross-functional delivery and system ownership."
+      }
+    },
+    {
+      "id": "edge-ambiguous",
+      "label": "Edge Case Ambiguous",
+      "difficulty": "bad",
+      "description": "Messy candidate notes that should challenge validation and matching.",
+      "resume_path": "data/bad/edge_case_ambiguous_resume.txt",
+      "job": {
+        "job_title": "Product Support Generalist",
+        "company_name": "ABC Company",
+        "location": "Remote",
+        "skills_csv": "Customer Support, Documentation, SQL",
+        "job_description": "Handle mixed operational tasks across customer support, documentation, and lightweight data cleanup. Remote contract role with changing priorities and unclear ownership."
+      }
+    }
+  ]
+}

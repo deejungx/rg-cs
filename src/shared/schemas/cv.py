@@ -7,7 +7,7 @@ the runtime validation contract.
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class CvBaseModel(BaseModel):
@@ -286,6 +286,15 @@ class DocumentParseResult(CvBaseModel):
     parser: str = ""
     file_type: str = ""
     is_image_based: bool = False
+    redaction_applied: bool = False
+    _raw_text: str = PrivateAttr(default="")
+
+    @property
+    def source_text(self) -> str:
+        return self._raw_text or self.text
+
+    def set_source_text(self, value: str) -> None:
+        self._raw_text = value
 
 
 class CandidateArtifacts(CvBaseModel):

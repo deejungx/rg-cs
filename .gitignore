@@ -21,3 +21,6 @@ workspace/
 .codex
 
 skills-lock.json
+.py
+
+.deepeval

@@ -63,6 +63,14 @@ from src.shared.schemas.matching import (
     SummaryPillOutput,
     VacancyData,
 )
+from src.shared.schemas.job_opening import (
+    AnnotatedJobOpening,
+    JobExperienceLevel,
+    JobOpeningExtractionRequest,
+    JobOpeningExtractionResponse,
+    JobOpeningMetadata,
+    JobSalaryRange,
+)
 from src.shared.schemas.orchestration import (
     CandidateAnalysisResponse,
     ExecutionTraceStep,
@@ -132,6 +140,12 @@ __all__ = [
     "SkillsSection",
     "SummaryPillOutput",
     "VacancyData",
+    "AnnotatedJobOpening",
+    "JobExperienceLevel",
+    "JobOpeningExtractionRequest",
+    "JobOpeningExtractionResponse",
+    "JobOpeningMetadata",
+    "JobSalaryRange",
     "CandidateAnalysisResponse",
     "ExecutionTraceStep",
     "TraceContract",

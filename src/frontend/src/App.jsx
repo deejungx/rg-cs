@@ -1,6 +1,53 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+const navItems = [
+  { id: "dashboard", label: "Dashboard", icon: "D" },
+  { id: "candidates", label: "Candidates", icon: "C" },
+  { id: "jobs", label: "Job Openings", icon: "J" },
+  { id: "matching", label: "Matching", icon: "M" },
+  { id: "settings", label: "Settings", icon: "S" },
+];
+
+const extractionSteps = [
+  { id: "parse_document", label: "Parse document" },
+  { id: "validate_document", label: "Validate resume" },
+  { id: "extract_structured_profile", label: "Extract structured JSON" },
+  { id: "curate_structured_markdown", label: "Curate Markdown" },
+  { id: "persist_outputs", label: "Persist artifacts" },
+];
+
+const matchingSteps = [
+  { id: "parse_document", label: "Parse document" },
+  { id: "validate_document", label: "Validate resume" },
+  { id: "extract_structured_profile", label: "Extract structured JSON" },
+  { id: "curate_structured_markdown", label: "Curate Markdown" },
+  { id: "persist_outputs", label: "Persist candidate artifacts" },
+  { id: "build_matching_context", label: "Build matching context" },
+  { id: "run_match_analysis", label: "Run match analysis" },
+  { id: "assemble_match_results", label: "Assemble results" },
+];
+
+const storedCandidateMatchingSteps = [
+  { id: "build_matching_context", label: "Build matching context" },
+  { id: "run_match_analysis", label: "Run match analysis" },
+  { id: "assemble_match_results", label: "Assemble results" },
+];
+
+const jobOpeningTextSteps = [
+  { id: "read_pasted_text", label: "Read pasted text" },
+  { id: "extract_structured_job", label: "Extract structured job" },
+  { id: "quality_guardrail", label: "Quality guardrail" },
+  { id: "persist_job_opening", label: "Persist artifacts" },
+];
+
+const jobOpeningWebsiteSteps = [
+  { id: "fetch_source_content", label: "Fetch and clean website" },
+  { id: "extract_structured_job", label: "Extract structured job" },
+  { id: "quality_guardrail", label: "Quality guardrail" },
+  { id: "persist_job_opening", label: "Persist artifacts" },
+];
 
 async function parseJson(response) {
   if (!response.ok) {
@@ -10,250 +57,557 @@ async function parseJson(response) {
   return response.json();
 }
 
-async function loadSampleResume(sampleId) {
-  const response = await fetch(`${apiBase}/api/samples/${sampleId}/resume`);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || "Failed to load sample resume.");
+function formatNumber(value) {
+  return new Intl.NumberFormat().format(value || 0);
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Not available";
   }
-  const blob = await response.blob();
-  const contentDisposition = response.headers.get("content-disposition") || "";
-  const match = contentDisposition.match(/filename="?([^"]+)"?/i);
-  const filename = match?.[1] || `${sampleId}.txt`;
-  return new File([blob], filename, { type: blob.type || "text/plain" });
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
-function formatEventType(type) {
-  return type.replaceAll("_", " ");
-}
-
-function formatStage(stage) {
-  return (stage || "candidate_analysis").replaceAll("_", " ");
-}
-
-function formatCurrency(value) {
-  if (typeof value !== "number") {
-    return null;
+function formatLatency(ms) {
+  if (!Number.isFinite(ms) || ms < 0) {
+    return "";
   }
-  return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
 }
 
-function getStageGroups(events) {
-  const groups = [];
-  const byStage = new Map();
-
-  for (const event of events) {
-    const stageKey = event.stage || "candidate_analysis";
-    if (!byStage.has(stageKey)) {
-      const group = { stage: stageKey, events: [] };
-      byStage.set(stageKey, group);
-      groups.push(group);
-    }
-    byStage.get(stageKey).events.push(event);
+function statusClass(status) {
+  if (status === "completed" || status === true || status === "ready" || status === "active") {
+    return "status-ok";
   }
-
-  return groups.map((group) => {
-    const latestEvent = group.events[group.events.length - 1];
-    const hasFailure = group.events.some((event) => event.type.includes("failed"));
-    const hasGuardrailFailure = group.events.some(
-      (event) => event.type === "guardrail_completed" && event.success === false,
-    );
-    const llmCalls = group.events.filter((event) => event.type === "llm_call_completed");
-    const totalCost = llmCalls.reduce(
-      (sum, event) => sum + (typeof event.estimated_cost_usd === "number" ? event.estimated_cost_usd : 0),
-      0,
-    );
-    const totalTokens = llmCalls.reduce(
-      (sum, event) => sum + (event.usage?.total_tokens || 0),
-      0,
-    );
-
-    return {
-      ...group,
-      latestEvent,
-      hasFailure,
-      hasGuardrailFailure,
-      llmCallCount: llmCalls.length,
-      totalCost,
-      totalTokens,
-    };
-  });
+  if (status === "failed" || status === false || status === "inactive") {
+    return "status-bad";
+  }
+  return "status-warn";
 }
 
-function StepPill({ event }) {
-  const isFailure = event.type.includes("failed");
-  const isGuardrailWarning = event.type === "guardrail_completed" && event.success === false;
-  const hasDetails =
-    event.message ||
-    event.error ||
-    event.task_name ||
-    event.guardrail_type ||
-    event.retry_count !== undefined ||
-    event.model ||
-    event.usage ||
-    event.estimated_cost_usd !== undefined ||
-    event.finish_reason ||
-    event.agent_role;
+function formatJobStatus(status) {
+  return status === "inactive" ? "inactive" : "active";
+}
 
-  const pillClass = isFailure
-    ? "bg-red-100 text-red-700"
-    : isGuardrailWarning
-      ? "bg-ember-100 text-ember-700"
-      : "bg-moss-100 text-moss-700";
+function StatusDot({ value }) {
+  return <span className={`status-dot ${statusClass(value)}`} />;
+}
 
-  if (!hasDetails) {
-    return (
-      <span className={`inline-flex rounded-full px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] ${pillClass}`}>
-        {formatEventType(event.type)}
-      </span>
-    );
-  }
-
-  const usage = event.usage || {};
-
+function HealthStrip({ health }) {
+  const services = health?.services || {};
+  const serviceItems = ["redis", "worker", "phoenix", "qdrant", "workspace"];
   return (
-    <details className="group inline-block">
-      <summary
-        className={`list-none cursor-pointer rounded-full px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] ${pillClass}`}
-      >
-        {formatEventType(event.type)}
-      </summary>
-      <div className="mt-3 w-[min(26rem,80vw)] rounded-2xl border border-moss-900/10 bg-white p-4 text-sm text-moss-700 shadow-sm">
-        {event.message ? <p>{event.message}</p> : null}
-        <div className="mt-3 grid gap-2">
-          {event.agent_role ? <p><span className="font-medium text-moss-900">Agent:</span> {event.agent_role}</p> : null}
-          {event.task_name ? <p><span className="font-medium text-moss-900">Task:</span> {event.task_name}</p> : null}
-          {event.guardrail_type ? <p><span className="font-medium text-moss-900">Guardrail:</span> {event.guardrail_type}</p> : null}
-          {event.retry_count !== undefined ? <p><span className="font-medium text-moss-900">Retry:</span> {event.retry_count}</p> : null}
-          {event.model ? <p><span className="font-medium text-moss-900">Model:</span> {event.model}</p> : null}
-          {event.finish_reason ? <p><span className="font-medium text-moss-900">Finish:</span> {event.finish_reason}</p> : null}
-          {event.call_id ? <p><span className="font-medium text-moss-900">Call ID:</span> {event.call_id}</p> : null}
-          {usage.total_tokens ? (
-            <p>
-              <span className="font-medium text-moss-900">Tokens:</span>{" "}
-              total {usage.total_tokens}, prompt {usage.prompt_tokens || 0}, completion {usage.completion_tokens || 0}
-              {usage.cached_prompt_tokens ? `, cached ${usage.cached_prompt_tokens}` : ""}
-            </p>
-          ) : null}
-          {event.estimated_cost_usd !== undefined && event.estimated_cost_usd !== null ? (
-            <p><span className="font-medium text-moss-900">Estimated cost:</span> {formatCurrency(event.estimated_cost_usd)}</p>
-          ) : null}
-          {event.error ? <p className="text-red-700"><span className="font-medium">Error:</span> {event.error}</p> : null}
-          <p><span className="font-medium text-moss-900">At:</span> {event.timestamp}</p>
-        </div>
+    <div className="health-strip">
+      <div className="health-brand">
+        <span className="brand-mark">AR</span>
+        <strong>AutoRecruit Ops</strong>
       </div>
-    </details>
+      <div className="health-services">
+        {serviceItems.map((service) => (
+          <span className="health-chip" key={service}>
+            <StatusDot value={services[service]} />
+            {service}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
-export default function App() {
-  const [health, setHealth] = useState("loading");
-  const [samples, setSamples] = useState([]);
-  const [selectedSampleId, setSelectedSampleId] = useState("");
-  const [jobTitle, setJobTitle] = useState("");
-  const [companyName, setCompanyName] = useState("");
-  const [location, setLocation] = useState("");
-  const [skillsCsv, setSkillsCsv] = useState("");
-  const [jobDescription, setJobDescription] = useState("");
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [fileSourceLabel, setFileSourceLabel] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isLoadingSample, setIsLoadingSample] = useState(false);
-  const [analysis, setAnalysis] = useState(null);
-  const [runInfo, setRunInfo] = useState(null);
-  const [progressEvents, setProgressEvents] = useState([]);
+function Shell({ activePage, setActivePage, health, children }) {
+  return (
+    <div className="app-shell">
+      <HealthStrip health={health} />
+      <aside className="side-panel">
+        <div className="side-header">
+          <span className="brand-mark large">AR</span>
+          <div>
+            <strong>Recruitment</strong>
+            <span>Workflow Console</span>
+          </div>
+        </div>
+        <nav className="side-nav">
+          {navItems.map((item) => (
+            <button
+              className={activePage === item.id ? "nav-item active" : "nav-item"}
+              key={item.id}
+              onClick={() => setActivePage(item.id)}
+              type="button"
+            >
+              <span>{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <main className="main-panel">{children}</main>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, detail, tone = "neutral" }) {
+  return (
+    <article className={`metric-card tone-${tone}`}>
+      <span className="eyebrow">{label}</span>
+      <strong>{value}</strong>
+      {detail ? <p>{detail}</p> : null}
+    </article>
+  );
+}
+
+function RunStatsTable({ runs }) {
+  return (
+    <div className="panel table-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Runs</h2>
+          <p>Recent workflow execution stats.</p>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Status</th>
+              <th>Candidate</th>
+              <th>Tokens</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.length ? (
+              runs.map((run) => (
+                <tr key={run.run_id}>
+                  <td className="mono">{run.run_id}</td>
+                  <td>
+                    <span className={`status-pill ${statusClass(run.status)}`}>{run.status}</span>
+                  </td>
+                  <td>{run.candidate_id || "Not applicable"}</td>
+                  <td>{formatNumber(run.tokens)}</td>
+                  <td>{formatDate(run.updated_at)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan="5">No runs have been recorded yet.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ dashboard, refreshDashboard }) {
+  const runs = dashboard?.recent_runs || [];
+  return (
+    <div className="page-stack">
+      <section className="page-title">
+        <div>
+          <span className="eyebrow">Home</span>
+          <h1>Operations Dashboard</h1>
+        </div>
+        <button className="secondary-button" onClick={refreshDashboard} type="button">
+          Refresh
+        </button>
+      </section>
+
+      <section className="metric-grid">
+        <MetricCard label="Active runs" value={formatNumber(dashboard?.runs_active)} detail="" />|
+        <MetricCard label="Success runs" value={formatNumber(dashboard?.runs_total)} detail="" />
+        <MetricCard label="Failed runs" value={formatNumber(dashboard?.runs_failed)} detail="" tone="red" />
+        <MetricCard label="Tokens consumed" value={formatNumber(dashboard?.tokens_consumed)} detail="" tone="blue" />
+        <MetricCard label="Workflows setup" value={formatNumber(dashboard?.workflow_count)} detail="" />
+        <MetricCard label="Agents setup" value={formatNumber(dashboard?.agent_count)} detail="" />
+      </section>
+
+      <section className="split-grid">
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Recruitment Stats</h2>
+              <p>Workspace-backed candidate and job-opening counts.</p>
+            </div>
+          </div>
+          <div className="stat-list">
+            <div>
+              <span>Candidates</span>
+              <strong>{formatNumber(dashboard?.candidates_total)}</strong>
+            </div>
+            <div>
+              <span>Job openings</span>
+              <strong>{formatNumber(dashboard?.job_openings_total)}</strong>
+            </div>
+            <div>
+              <span>Active openings</span>
+              <strong>{formatNumber(dashboard?.active_job_openings)}</strong>
+            </div>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Workflow Inventory</h2>
+              <p>Configured workflow entry points.</p>
+            </div>
+          </div>
+          <div className="workflow-list">
+            {(dashboard?.workflows || []).map((workflow) => (
+              <div key={workflow.id}>
+                <StatusDot value={workflow.status} />
+                <span>{workflow.name}</span>
+                <strong>{workflow.status}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <RunStatsTable runs={runs} />
+    </div>
+  );
+}
+
+function getWorkflowStepState(stepId, events, isComplete) {
+  if (events.some((event) => event.type === "step_failed" && event.label === stepId)) {
+    return "failed";
+  }
+  if (events.some((event) => event.type === "step_completed" && event.label === stepId)) {
+    return "completed";
+  }
+  if (events.some((event) => event.type === "step_started" && event.label === stepId)) {
+    return "current";
+  }
+  if (isComplete) {
+    return "completed";
+  }
+  return "pending";
+}
+
+function getWorkflowStepUsage(stepId, events) {
+  const llmEvents = events.filter(
+    (event) =>
+      event.stage === stepId &&
+      (event.type === "llm_call_started" || event.type === "llm_call_completed"),
+  );
+  if (!llmEvents.length) {
+    return null;
+  }
+  const latest = llmEvents[llmEvents.length - 1];
+  const completed = [...llmEvents].reverse().find((event) => event.type === "llm_call_completed");
+  const usage = completed?.usage || latest?.usage || {};
+  return {
+    model: latest.model || completed?.model || "model pending",
+    inputTokens: usage.prompt_tokens,
+    outputTokens: completed?.usage?.completion_tokens,
+  };
+}
+
+function getWorkflowStepLatency(stepId, events) {
+  const started = events.find((event) => event.type === "step_started" && event.label === stepId);
+  const completed = [...events].reverse().find(
+    (event) => event.type === "step_completed" && event.label === stepId,
+  );
+  const failed = [...events].reverse().find((event) => event.type === "step_failed" && event.label === stepId);
+  if (!started?.timestamp) {
+    return "";
+  }
+  const startTime = new Date(started.timestamp).getTime();
+  const terminal = completed || failed;
+  const endTime = terminal?.timestamp ? new Date(terminal.timestamp).getTime() : Date.now();
+  return formatLatency(endTime - startTime);
+}
+
+function WorkflowStepper({ steps, events, isComplete }) {
+  return (
+    <div className="stepper">
+      {steps.map((step) => {
+        const state = getWorkflowStepState(step.id, events, isComplete);
+        const usage = getWorkflowStepUsage(step.id, events);
+        const latency = getWorkflowStepLatency(step.id, events);
+        return (
+          <div className={`step-item ${state}`} key={step.id}>
+            <span className="step-marker">
+              {state === "completed" ? "✓" : state === "current" ? "" : "·"}
+            </span>
+            <span className="step-copy">
+              <span>{step.label}</span>
+              {usage ? (
+                <span className="step-usage">
+                  {usage.model}
+                  {latency ? ` · ${latency}` : ""}
+                  {usage.inputTokens !== undefined ? ` · input ${formatNumber(usage.inputTokens)}` : ""}
+                  {usage.outputTokens !== undefined ? ` · output ${formatNumber(usage.outputTokens)}` : ""}
+                </span>
+              ) : latency ? (
+                <span className="step-usage">{latency}</span>
+              ) : null}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CandidatesTable({ candidates }) {
+  return (
+    <div className="panel table-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Candidate Records</h2>
+          <p>Summaries aggregated from structured workspace artifacts.</p>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Candidate</th>
+              <th>Role</th>
+              <th>Location</th>
+              <th>Skills</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.length ? (
+              candidates.map((candidate) => (
+                <tr key={candidate.candidate_id}>
+                  <td>
+                    <strong>{candidate.full_name}</strong>
+                    <span className="table-subtext">{candidate.candidate_id}</span>
+                  </td>
+                  <td>{candidate.primary_designation || "Not specified"}</td>
+                  <td>{candidate.location || "Not specified"}</td>
+                  <td>
+                    {(candidate.skills || []).slice(0, 4).join(", ")}
+                    {candidate.skill_count > 4 ? ` +${candidate.skill_count - 4}` : ""}
+                  </td>
+                  <td>{formatDate(candidate.updated_at)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan="5">No candidate records have been curated yet.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
+  const [file, setFile] = useState(null);
+  const [task, setTask] = useState(null);
+  const [events, setEvents] = useState([]);
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch(`${apiBase}/health`)
-      .then(parseJson)
-      .then((data) => setHealth(data.status))
-      .catch((err) => setHealth(`error: ${err.message}`));
-
-    fetch(`${apiBase}/api/samples`)
-      .then(parseJson)
-      .then((data) => {
-        const sampleItems = data.samples || [];
-        setSamples(sampleItems);
-        if (sampleItems.length > 0) {
-          applySample(sampleItems[0]);
-        }
-      })
-      .catch((err) => setError(err.message));
-  }, []);
-
-  function applySample(sample) {
-    setSelectedSampleId(sample.id);
-    setJobTitle(sample.job.job_title);
-    setCompanyName(sample.job.company_name);
-    setLocation(sample.job.location);
-    setSkillsCsv(sample.job.skills_csv);
-    setJobDescription(sample.job.job_description);
-  }
-
-  async function handleLoadSampleResume() {
-    if (!selectedSampleId) {
-      return;
+    if (!task?.task_id || ["SUCCESS", "FAILURE"].includes(task.state)) {
+      return undefined;
     }
-    setError("");
-    setIsLoadingSample(true);
-    try {
-      const file = await loadSampleResume(selectedSampleId);
-      setSelectedFile(file);
-      setFileSourceLabel(file.name);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setIsLoadingSample(false);
-    }
-  }
+    const timer = window.setInterval(() => {
+      fetch(`${apiBase}/api/cv/tasks/${task.task_id}`)
+        .then(parseJson)
+        .then((payload) => {
+          setTask(payload);
+          if (payload.state === "SUCCESS") {
+            refreshCandidates();
+            refreshDashboard();
+          }
+        })
+        .catch((err) => setError(err.message));
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [task, refreshCandidates, refreshDashboard]);
 
-  async function handleSubmit(event) {
+  async function submit(event) {
     event.preventDefault();
-    setError("");
-    setAnalysis(null);
-    setRunInfo(null);
-    setProgressEvents([]);
-    if (!selectedFile) {
-      setError("Choose your own CV or load a sample resume before running the orchestration.");
+    if (!file) {
+      setError("Choose a resume before starting extraction.");
       return;
     }
-
+    setError("");
+    setTask(null);
+    setEvents([]);
     setIsSubmitting(true);
     try {
       const formData = new FormData();
-      formData.append("file", selectedFile);
-      formData.append("job_title", jobTitle);
-      formData.append("company_name", companyName);
-      formData.append("location", location);
-      formData.append("skills_csv", skillsCsv);
-      formData.append("job_description", jobDescription);
-
-      const data = await fetch(`${apiBase}/api/orchestration/runs`, {
+      formData.append("file", file);
+      const payload = await fetch(`${apiBase}/api/cv/extract`, {
         method: "POST",
         body: formData,
       }).then(parseJson);
-      setRunInfo(data);
+      setTask(payload);
+      const source = new EventSource(`${apiBase}/api/cv/tasks/${payload.task_id}/events`);
+      source.onmessage = (message) => {
+        const eventPayload = JSON.parse(message.data);
+        setEvents((current) => [...current, eventPayload]);
+        if (eventPayload.type === "run_completed" || eventPayload.type === "run_failed") {
+          source.close();
+        }
+      };
+      source.onerror = () => {
+        source.close();
+      };
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
-      const eventSource = new EventSource(`${apiBase}/api/orchestration/runs/${data.run_id}/events`);
-      eventSource.onmessage = async (message) => {
-        const payload = JSON.parse(message.data);
-        setProgressEvents((current) => [...current, payload]);
+  return (
+    <section className="workflow-page">
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">Workflow</span>
+          <h1>Candidates</h1>
+        </div>
+      </div>
+      <section className="split-grid">
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Resume Extraction</h2>
+              <p>Upload a resume to create a structured candidate record.</p>
+            </div>
+          </div>
+          <form className="form-stack form-offset" onSubmit={submit}>
+            <label>
+              <span>Resume file</span>
+              <input
+                className="field"
+                type="file"
+                accept=".pdf,.docx,.txt,.md"
+                onChange={(event) => setFile(event.target.files?.[0] || null)}
+              />
+            </label>
+            <button className="primary-button" disabled={isSubmitting} type="submit">
+              {isSubmitting ? "Starting..." : "Run Extraction"}
+            </button>
+          </form>
+          {error ? <p className="error-box">{error}</p> : null}
+        </div>
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Progress</h2>
+              <p>{task ? `Task ${task.task_id}` : "No extraction task running."}</p>
+            </div>
+            {task ? <span className={`status-pill ${statusClass(task.state === "SUCCESS" ? "completed" : task.state === "FAILURE" ? "failed" : "running")}`}>{task.state}</span> : null}
+          </div>
+          <WorkflowStepper
+            events={events}
+            isComplete={task?.state === "SUCCESS"}
+            steps={extractionSteps}
+          />
+        </div>
+      </section>
 
-        if (payload.type === "run_completed" || payload.type === "run_failed") {
-          eventSource.close();
-          const runPayload = await fetch(`${apiBase}/api/orchestration/runs/${data.run_id}`).then(parseJson);
+      {task?.state === "SUCCESS" ? (
+        <section className="split-grid">
+          <div className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Structured JSON</h2>
+                <p>Persisted candidate profile artifact.</p>
+              </div>
+            </div>
+            <pre className="code-block">{task.artifacts?.structured_json || JSON.stringify(task.result?.structured_profile || {}, null, 2)}</pre>
+          </div>
+          <div className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Curated Markdown</h2>
+                <p>Workspace-ready candidate record.</p>
+              </div>
+            </div>
+            <pre className="code-block">{task.artifacts?.structured_markdown || "Markdown artifact not available."}</pre>
+          </div>
+        </section>
+      ) : null}
+
+      <CandidatesTable candidates={candidates} />
+    </section>
+  );
+}
+
+function JobOpeningsPage({ jobs, refreshJobs, refreshDashboard }) {
+  const [sourceType, setSourceType] = useState("pasted_text");
+  const [content, setContent] = useState("");
+  const [extractedJob, setExtractedJob] = useState(null);
+  const [runInfo, setRunInfo] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedJobDetails, setSelectedJobDetails] = useState(null);
+  const [updatingJobId, setUpdatingJobId] = useState("");
+  const [statusNotice, setStatusNotice] = useState(null);
+
+  useEffect(() => {
+    if (!statusNotice) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setStatusNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [statusNotice]);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!content.trim()) {
+      setError(sourceType === "website" ? "Enter a job-posting URL." : "Paste a job description.");
+      return;
+    }
+    setError("");
+    setExtractedJob(null);
+    setRunInfo(null);
+    setEvents([]);
+    setIsSubmitting(true);
+    try {
+      const payload = await fetch(`${apiBase}/api/recruitment/job-openings/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_type: sourceType,
+          content,
+        }),
+      }).then(parseJson);
+      setRunInfo(payload);
+      const source = new EventSource(`${apiBase}/api/recruitment/job-openings/runs/${payload.run_id}/events`);
+      source.onmessage = async (message) => {
+        const eventPayload = JSON.parse(message.data);
+        setEvents((current) => [...current, eventPayload]);
+        if (eventPayload.type === "run_completed" || eventPayload.type === "run_failed") {
+          source.close();
+          const runPayload = await fetch(`${apiBase}/api/recruitment/job-openings/runs/${payload.run_id}`).then(parseJson);
           if (runPayload.status === "completed") {
-            setAnalysis(runPayload.result);
+            setExtractedJob(runPayload.result);
+            setContent("");
+            await Promise.all([refreshJobs(), refreshDashboard()]);
           } else {
-            setError(runPayload.error || "The orchestration run failed.");
+            setError(runPayload.error || "Job opening curation failed.");
           }
           setIsSubmitting(false);
         }
       };
-      eventSource.onerror = () => {
-        eventSource.close();
-        setError("The live progress stream disconnected before the run completed.");
+      source.onerror = () => {
+        source.close();
+        setError("The curation progress stream disconnected before completion.");
         setIsSubmitting(false);
       };
     } catch (err) {
@@ -262,370 +616,645 @@ export default function App() {
     }
   }
 
-  const selectedSample = samples.find((sample) => sample.id === selectedSampleId) || null;
-  const trace = analysis?.trace || [];
-  const matchSummary = analysis?.matching?.jd_match_overview?.sections?.overall_ai_analysis || null;
-  const extractionNotes = analysis?.extraction?.structured_profile?.extraction_notes || [];
-  const stageGroups = getStageGroups(progressEvents);
-  const currentStage = stageGroups.length ? stageGroups[stageGroups.length - 1] : null;
+  async function updateJobStatus(job, status) {
+    setError("");
+    setUpdatingJobId(job.id);
+    try {
+      const updated = await fetch(`${apiBase}/api/recruitment/job-openings/${job.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      }).then(parseJson);
+      if (selectedJobDetails?.id === job.id) {
+        setSelectedJobDetails(updated);
+      }
+      await Promise.all([refreshJobs(), refreshDashboard()]);
+      setStatusNotice({
+        id: `${job.id}-${Date.now()}`,
+        message: `${job.title} is now ${status}.`,
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUpdatingJobId("");
+    }
+  }
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <section className="mb-6 grid gap-5 lg:grid-cols-[1.8fr_0.8fr]">
+    <section className="workflow-page">
+      <div className="page-title">
         <div>
-          <p className="mb-2 text-xs uppercase tracking-[0.22em] text-moss-600">
-            Multi-Agent Orchestration
-          </p>
-          <h1 className="max-w-4xl font-display text-4xl leading-none text-moss-900 sm:text-6xl">
-            Start from real sample inputs, run the pipeline once, and inspect every handoff.
-          </h1>
-          <p className="mt-4 max-w-3xl text-sm text-moss-700 sm:text-base">
-            This UI drives a reviewer-facing orchestration endpoint that extracts a candidate
-            profile, validates the handoff contract, compares it to a vacancy, and exposes the
-            full structured result plus execution trace.
-          </p>
+          <span className="eyebrow">Workflow</span>
+          <h1>Job Opening Curation</h1>
         </div>
-
-        <aside className="glass-card grid content-center gap-4 p-5">
-          <div>
-            <span className="meta-label">Backend health</span>
-            <strong className="text-lg text-moss-900">{health}</strong>
-          </div>
-          <div>
-            <span className="meta-label">Model mode</span>
-            <strong className="text-lg text-moss-900">
-              {analysis ? `${analysis.model_provider} / ${analysis.model_mode}` : "pending"}
-            </strong>
-          </div>
-          <div>
-            <span className="meta-label">Current stage</span>
-            <strong className="text-lg text-moss-900">
-              {currentStage ? formatStage(currentStage.stage) : "idle"}
-            </strong>
-          </div>
-        </aside>
-      </section>
-
-      <section className="grid gap-5 lg:grid-cols-[minmax(320px,0.9fr)_minmax(420px,1.1fr)]">
-        <section className="glass-card p-5">
-          <form className="space-y-4" onSubmit={handleSubmit}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-moss-900">Inputs</h2>
-                <p className="text-sm text-moss-600">
-                  Use shipped data samples or upload your own document.
-                </p>
-              </div>
-              {selectedSample ? (
-                <span
-                  className={`rounded-full px-3 py-1 text-[0.72rem] uppercase tracking-[0.16em] ${
-                    selectedSample.difficulty === "bad"
-                      ? "bg-ember-100 text-ember-700"
-                      : "bg-moss-100 text-moss-700"
-                  }`}
-                >
-                  {selectedSample.difficulty}
-                </span>
-              ) : null}
-            </div>
-
-            <label className="block">
-              <span className="mb-2 block text-sm text-moss-700">Sample scenario</span>
-              <select
-                className="field"
-                value={selectedSampleId}
-                onChange={(event) => {
-                  const sample = samples.find((item) => item.id === event.target.value);
-                  if (sample) {
-                    applySample(sample);
-                  }
-                }}
+      </div>
+      <div className="split-grid">
+        <div className="panel">
+          <form className="form-stack" onSubmit={submit}>
+            <div className="segmented-control">
+              <button
+                className={sourceType === "pasted_text" ? "active" : ""}
+                onClick={() => setSourceType("pasted_text")}
+                type="button"
               >
-                {samples.map((sample) => (
-                  <option key={sample.id} value={sample.id}>
-                    {sample.label}
+                Pasted Text
+              </button>
+              <button
+                className={sourceType === "website" ? "active" : ""}
+                onClick={() => setSourceType("website")}
+                type="button"
+              >
+                Website
+              </button>
+            </div>
+            {sourceType === "website" ? (
+              <label>
+                <span>Job posting URL</span>
+                <input
+                  className="field"
+                  placeholder="https://example.com/jobs/ui-ux-designer"
+                  type="url"
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                />
+              </label>
+            ) : (
+              <label>
+                <span>Job description text</span>
+                <textarea
+                  className="field min-h tall-textarea"
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                />
+              </label>
+            )}
+            <button className="primary-button" disabled={isSubmitting} type="submit">
+              {isSubmitting ? "Curating..." : "Curate And Store Opening"}
+            </button>
+          </form>
+          {error ? <p className="error-box">{error}</p> : null}
+          {extractedJob ? (
+            <p className="success-box">
+              Stored JSON at {extractedJob.json_path} and Markdown at {extractedJob.markdown_path}.
+            </p>
+          ) : null}
+        </div>
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Progress</h2>
+              <p>{runInfo ? `Run ${runInfo.run_id}` : "No curation run active."}</p>
+            </div>
+            {runInfo ? (
+              <span className={`status-pill ${statusClass(extractedJob ? "completed" : error ? "failed" : "running")}`}>
+                {extractedJob ? "completed" : error ? "failed" : "running"}
+              </span>
+            ) : null}
+          </div>
+          <WorkflowStepper
+            events={events}
+            isComplete={Boolean(extractedJob)}
+            steps={sourceType === "website" ? jobOpeningWebsiteSteps : jobOpeningTextSteps}
+          />
+        </div>
+      </div>
+      {extractedJob ? (
+        <section className="split-grid">
+          <div className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Structured Job JSON</h2>
+                <p>Annotated model stored in the workspace.</p>
+              </div>
+            </div>
+            <div className="quality-summary">
+              <div className="quality-score compact">
+                <span>Confidence</span>
+                <strong>{Math.round((extractedJob.job_opening.metadata?.confidence || 0) * 100)}%</strong>
+              </div>
+              <div>
+                <span className="eyebrow">Missing fields</span>
+                <div className="tag-row">
+                  {(extractedJob.job_opening.metadata?.missing_fields || []).length ? (
+                    extractedJob.job_opening.metadata.missing_fields.map((field) => (
+                      <span className="warning-tag" key={field}>{field}</span>
+                    ))
+                  ) : (
+                    <span className="ok-tag">None</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <pre className="code-block">{JSON.stringify(extractedJob.job_opening, null, 2)}</pre>
+          </div>
+          <div className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Curated Markdown</h2>
+                <p>Clean recruiter-facing job opening record.</p>
+              </div>
+            </div>
+            <pre className="code-block">{extractedJob.markdown}</pre>
+          </div>
+        </section>
+      ) : null}
+      <div className="panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Stored Openings</h2>
+            <p>Workspace artifacts available for matching.</p>
+          </div>
+        </div>
+        <div className="job-list">
+          {jobs.length ? (
+            jobs.map((job) => (
+              <article key={job.id}>
+                <div className="job-card-header">
+                  <div>
+                    <h3>{job.title}</h3>
+                    <p>{[job.company_name, job.location].filter(Boolean).join(" · ") || "Details pending"}</p>
+                  </div>
+                  <span className={`status-pill ${statusClass(formatJobStatus(job.status))}`}>
+                    {formatJobStatus(job.status)}
+                  </span>
+                </div>
+                <div className="job-card-actions">
+                  <label className="circle-checkbox-control">
+                    <input
+                      checked={formatJobStatus(job.status) === "active"}
+                      disabled={updatingJobId === job.id}
+                      type="checkbox"
+                      onChange={(event) => updateJobStatus(job, event.target.checked ? "active" : "inactive")}
+                    />
+                    <span className="circle-checkbox" aria-hidden="true" />
+                    <span>{updatingJobId === job.id ? "Updating" : "Active"}</span>
+                  </label>
+                  <button className="secondary-button compact-button" type="button" onClick={() => setSelectedJobDetails(job)}>
+                    View Details
+                  </button>
+                </div>
+                <span>{job.json_path}</span>
+              </article>
+            ))
+          ) : (
+            <p className="muted">No job openings stored yet.</p>
+          )}
+        </div>
+      </div>
+      {selectedJobDetails ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setSelectedJobDetails(null)}>
+          <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="job-details-title" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">Job Opening</span>
+                <h2 id="job-details-title">{selectedJobDetails.title}</h2>
+                <p>{[selectedJobDetails.company_name, selectedJobDetails.location].filter(Boolean).join(" · ") || "Details pending"}</p>
+              </div>
+              <button className="secondary-button compact-button" type="button" onClick={() => setSelectedJobDetails(null)}>
+                Close
+              </button>
+            </div>
+            <div className="modal-summary">
+              <div>
+                <span>Status</span>
+                <strong>{formatJobStatus(selectedJobDetails.status)}</strong>
+              </div>
+              <div>
+                <span>Created</span>
+                <strong>{formatDate(selectedJobDetails.created_at)}</strong>
+              </div>
+              <div>
+                <span>Updated</span>
+                <strong>{formatDate(selectedJobDetails.updated_at)}</strong>
+              </div>
+            </div>
+            <pre className="code-block">{JSON.stringify(selectedJobDetails, null, 2)}</pre>
+          </div>
+        </div>
+      ) : null}
+      {statusNotice ? (
+        <div className="side-toast-pill" key={statusNotice.id} role="status">
+          {statusNotice.message}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function MatchingPage({ candidates, jobs, refreshDashboard }) {
+  const [candidateSource, setCandidateSource] = useState("existing");
+  const [selectedCandidateId, setSelectedCandidateId] = useState("");
+  const [file, setFile] = useState(null);
+  const [selectedJobId, setSelectedJobId] = useState("");
+  const [runInfo, setRunInfo] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [analysis, setAnalysis] = useState(null);
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const selectedJob = useMemo(
+    () => jobs.find((job) => job.id === selectedJobId) || jobs[0] || null,
+    [jobs, selectedJobId],
+  );
+  const selectedCandidate = useMemo(
+    () => candidates.find((candidate) => candidate.candidate_id === selectedCandidateId) || candidates[0] || null,
+    [candidates, selectedCandidateId],
+  );
+
+  useEffect(() => {
+    if (!selectedJobId && jobs[0]?.id) {
+      setSelectedJobId(jobs[0].id);
+    }
+  }, [jobs, selectedJobId]);
+
+  useEffect(() => {
+    if (!selectedCandidateId && candidates[0]?.candidate_id) {
+      setSelectedCandidateId(candidates[0].candidate_id);
+    }
+  }, [candidates, selectedCandidateId]);
+
+  async function watchRun(data) {
+    setRunInfo(data);
+    const source = new EventSource(`${apiBase}/api/orchestration/runs/${data.run_id}/events`);
+    source.onmessage = async (message) => {
+      const payload = JSON.parse(message.data);
+      setEvents((current) => [...current, payload]);
+      if (payload.type === "run_completed" || payload.type === "run_failed") {
+        source.close();
+        const runPayload = await fetch(`${apiBase}/api/orchestration/runs/${data.run_id}`).then(parseJson);
+        if (runPayload.status === "completed") {
+          setAnalysis(runPayload.result);
+        } else {
+          setError(runPayload.error || "The match analysis run failed.");
+        }
+        setIsSubmitting(false);
+        refreshDashboard();
+      }
+    };
+    source.onerror = () => {
+      source.close();
+      setError("The live progress stream disconnected before the run completed.");
+      setIsSubmitting(false);
+    };
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!selectedJob) {
+      setError("Choose a stored job opening before running match analysis.");
+      return;
+    }
+    if (candidateSource === "existing" && !selectedCandidate) {
+      setError("Choose a candidate or switch to resume upload.");
+      return;
+    }
+    if (candidateSource === "upload" && !file) {
+      setError("Upload a resume or switch to candidate selection.");
+      return;
+    }
+    setError("");
+    setRunInfo(null);
+    setEvents([]);
+    setAnalysis(null);
+    setIsSubmitting(true);
+    try {
+      const jobPayload = {
+        job_title: selectedJob.title,
+        company_name: selectedJob.company_name || "",
+        location: selectedJob.location || "",
+        skills_csv: selectedJob.skills_csv || (selectedJob.skills_required || []).join(", "),
+        job_description: selectedJob.description || "",
+      };
+      if (candidateSource === "existing") {
+        const data = await fetch(`${apiBase}/api/orchestration/stored-candidate-runs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            candidate_id: selectedCandidate.candidate_id,
+            ...jobPayload,
+          }),
+        }).then(parseJson);
+        watchRun(data);
+        return;
+      }
+      const formData = new FormData();
+      formData.append("file", file);
+      Object.entries(jobPayload).forEach(([key, value]) => formData.append(key, value));
+      const data = await fetch(`${apiBase}/api/orchestration/runs`, {
+        method: "POST",
+        body: formData,
+      }).then(parseJson);
+      watchRun(data);
+    } catch (err) {
+      setError(err.message);
+      setIsSubmitting(false);
+    }
+  }
+
+  const overview = analysis?.matching?.jd_match_overview;
+
+  return (
+    <section className="workflow-page">
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">Workflow</span>
+          <h1>Match Analysis</h1>
+        </div>
+      </div>
+      <div className="split-grid">
+        <div className="panel">
+          <form className="form-stack" onSubmit={submit}>
+            <div className="segmented-control">
+              <button
+                className={candidateSource === "existing" ? "active" : ""}
+                onClick={() => {
+                  setCandidateSource("existing");
+                  setFile(null);
+                }}
+                type="button"
+              >
+                Existing Candidate
+              </button>
+              <button
+                className={candidateSource === "upload" ? "active" : ""}
+                onClick={() => {
+                  setCandidateSource("upload");
+                  setSelectedCandidateId("");
+                }}
+                type="button"
+              >
+                Upload Resume
+              </button>
+            </div>
+            {candidateSource === "existing" ? (
+              <label>
+                <span>Candidate</span>
+                <select
+                  className="field"
+                  value={selectedCandidate?.candidate_id || ""}
+                  onChange={(event) => setSelectedCandidateId(event.target.value)}
+                >
+                  {candidates.map((candidate) => (
+                    <option key={candidate.candidate_id} value={candidate.candidate_id}>
+                      {candidate.full_name} {candidate.primary_designation ? `- ${candidate.primary_designation}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                <span>Resume file</span>
+                <input className="field" type="file" accept=".pdf,.docx,.txt,.md" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+              </label>
+            )}
+            <label>
+              <span>Job opening</span>
+              <select className="field" value={selectedJob?.id || ""} onChange={(event) => setSelectedJobId(event.target.value)}>
+                {jobs.map((job) => (
+                  <option key={job.id} value={job.id}>
+                    {job.title} {job.company_name ? `- ${job.company_name}` : ""}
                   </option>
                 ))}
               </select>
             </label>
-
-            {selectedSample ? (
-              <div className="rounded-2xl border border-moss-900/10 bg-white/50 p-4 text-sm text-moss-700">
-                <p className="font-medium text-moss-900">{selectedSample.label}</p>
-                <p className="mt-1">{selectedSample.description}</p>
+            {selectedJob ? (
+              <div className="selected-job">
+                <strong>{selectedJob.title}</strong>
+                <p>{selectedJob.description || "No description provided."}</p>
               </div>
             ) : null}
-
-            <div className="rounded-3xl border border-dashed border-moss-400/40 bg-white/45 p-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  className="rounded-full bg-moss-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-moss-800 disabled:cursor-wait disabled:opacity-75"
-                  type="button"
-                  onClick={handleLoadSampleResume}
-                  disabled={!selectedSampleId || isLoadingSample}
-                >
-                  {isLoadingSample ? "Loading sample CV..." : "Load Sample CV"}
-                </button>
-                <span className="text-sm text-moss-700">
-                  {fileSourceLabel || "No sample resume loaded yet."}
-                </span>
-              </div>
-
-              <label className="mt-4 block">
-                <span className="mb-2 block text-sm text-moss-700">Upload your own CV</span>
-                <input
-                  className="field"
-                  type="file"
-                  name="file"
-                  accept=".pdf,.docx,.txt,.md"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] || null;
-                    setSelectedFile(file);
-                    setFileSourceLabel(file?.name || "");
-                  }}
-                />
-              </label>
-            </div>
-
-            <label className="block">
-              <span className="mb-2 block text-sm text-moss-700">Job title</span>
-              <input className="field" value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} />
-            </label>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block">
-                <span className="mb-2 block text-sm text-moss-700">Company</span>
-                <input
-                  className="field"
-                  value={companyName}
-                  onChange={(event) => setCompanyName(event.target.value)}
-                />
-              </label>
-              <label className="block">
-                <span className="mb-2 block text-sm text-moss-700">Location</span>
-                <input className="field" value={location} onChange={(event) => setLocation(event.target.value)} />
-              </label>
-            </div>
-
-            <label className="block">
-              <span className="mb-2 block text-sm text-moss-700">Skills CSV</span>
-              <input className="field" value={skillsCsv} onChange={(event) => setSkillsCsv(event.target.value)} />
-            </label>
-
-            <label className="block">
-              <span className="mb-2 block text-sm text-moss-700">Job description</span>
-              <textarea
-                className="field min-h-56 resize-y"
-                rows={10}
-                value={jobDescription}
-                onChange={(event) => setJobDescription(event.target.value)}
-              />
-            </label>
-
-            <button
-              className="w-full rounded-full bg-gradient-to-r from-moss-700 to-moss-500 px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:from-moss-800 hover:to-moss-600 disabled:cursor-wait disabled:opacity-75"
-              type="submit"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? "Running orchestration..." : "Run Analysis"}
+            <button className="primary-button" disabled={isSubmitting || !jobs.length} type="submit">
+              {isSubmitting ? "Running..." : "Run Match Analysis"}
             </button>
           </form>
-        </section>
-
-        <section className="grid gap-5">
-          <section className="glass-card p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-moss-900">Outcome</h2>
-                <p className="text-sm text-moss-600">
-                  Reviewer-facing result with explicit model behavior.
-                </p>
-                {runInfo ? (
-                  <p className="mt-1 text-xs uppercase tracking-[0.16em] text-moss-500">
-                    Run {runInfo.run_id}
-                  </p>
-                ) : null}
-              </div>
-              {analysis ? (
-                <span
-                  className={`rounded-full px-3 py-1 text-[0.72rem] uppercase tracking-[0.16em] ${
-                    analysis.model_mode === "mock"
-                      ? "bg-ember-100 text-ember-700"
-                      : "bg-moss-100 text-moss-700"
-                  }`}
-                >
-                  {analysis.model_mode}
-                </span>
-              ) : null}
+          {error ? <p className="error-box">{error}</p> : null}
+        </div>
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Progress</h2>
+              <p>{runInfo ? `Run ${runInfo.run_id}` : "No match analysis running."}</p>
             </div>
-
-            {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
-
-            {analysis ? (
-              <div className="mt-4 space-y-4">
-                <p className="text-sm text-moss-700">{analysis.provider_reason}</p>
-                {matchSummary ? (
-                  <>
-                    <div className="rounded-2xl bg-moss-900 px-4 py-4 text-moss-50">
-                      <p className="meta-label text-moss-200">Summary</p>
-                      <h3 className="mt-2 text-2xl font-semibold text-white">{matchSummary.headline}</h3>
-                      <p className="mt-2 text-sm text-moss-100">{matchSummary.overall_summary}</p>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-2xl border border-moss-900/10 bg-white/55 p-4">
-                        <span className="meta-label">Overall fit</span>
-                        <strong className="text-lg text-moss-900">{matchSummary.overall_fit_level}</strong>
-                      </div>
-                      <div className="rounded-2xl border border-moss-900/10 bg-white/55 p-4">
-                        <span className="meta-label">Next step</span>
-                        <strong className="text-lg text-moss-900">{matchSummary.ideal_next_step}</strong>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-2xl bg-ember-100 px-4 py-4 text-sm text-ember-700">
-                    Matching was skipped because the uploaded document did not validate as a resume.
-                  </div>
-                )}
-
-                {extractionNotes.length ? (
-                  <div className="rounded-2xl border border-moss-900/10 bg-white/55 p-4">
-                    <span className="meta-label">Extraction notes</span>
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-moss-700">
-                      {extractionNotes.map((note) => (
-                        <li key={note}>{note}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-moss-700">
-                Run a sample or uploaded CV through the flow to populate the orchestration result.
-              </p>
-            )}
-          </section>
-
-          <section className="glass-card p-5">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-moss-900">Trace</h2>
-                <p className="text-sm text-moss-600">Live grouped stepper with revealable event details.</p>
-              </div>
-              <span className="rounded-full bg-moss-100 px-3 py-1 text-[0.72rem] uppercase tracking-[0.16em] text-moss-700">
-                {progressEvents.length || trace.length} events
+            {runInfo ? (
+              <span className={`status-pill ${statusClass(analysis ? "completed" : error ? "failed" : "running")}`}>
+                {analysis ? "completed" : error ? "failed" : "running"}
               </span>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {stageGroups.length ? (
-                stageGroups.map((group) => (
-                  <article
-                    className={`rounded-2xl border p-4 ${
-                      group.hasFailure
-                        ? "border-red-200 bg-red-50/70"
-                        : group.hasGuardrailFailure
-                          ? "border-ember-200 bg-ember-100/50"
-                          : "border-moss-900/10 bg-white/55"
-                    }`}
-                    key={group.stage}
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-lg font-semibold capitalize text-moss-900">{formatStage(group.stage)}</h3>
-                        <p className="mt-1 text-sm text-moss-600">
-                          {group.latestEvent?.message || group.latestEvent?.label || formatEventType(group.latestEvent?.type || "step")}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
-                          {group.events.length} events
-                        </span>
-                        {group.llmCallCount ? (
-                          <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
-                            {group.llmCallCount} model calls
-                          </span>
-                        ) : null}
-                        {group.totalTokens ? (
-                          <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
-                            {group.totalTokens} tokens
-                          </span>
-                        ) : null}
-                        {group.totalCost > 0 ? (
-                          <span className="rounded-full bg-white/80 px-3 py-1 text-[0.68rem] uppercase tracking-[0.14em] text-moss-700">
-                            {formatCurrency(group.totalCost)}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {group.events.map((event) => (
-                        <StepPill event={event} key={`${event.sequence}-${event.type}`} />
-                      ))}
-                    </div>
-                  </article>
-                ))
-              ) : trace.length ? (
-                trace.map((step) => (
-                  <article
-                    className="rounded-2xl border border-moss-900/10 bg-white/55 p-4"
-                    key={`${step.step}-${step.started_at}`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <strong className="text-moss-900">{step.step}</strong>
-                      <span
-                        className={`rounded-full px-3 py-1 text-[0.68rem] uppercase tracking-[0.16em] ${
-                          step.status === "skipped"
-                            ? "bg-ember-100 text-ember-700"
-                            : "bg-moss-100 text-moss-700"
-                        }`}
-                      >
-                        {step.status}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm text-moss-600">{step.agent}</p>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <span className="meta-label">Input contract</span>
-                        <p className="mt-1 text-sm text-moss-800">{step.input_contract.summary}</p>
-                      </div>
-                      <div>
-                        <span className="meta-label">Output contract</span>
-                        <p className="mt-1 text-sm text-moss-800">{step.output_contract.summary}</p>
-                      </div>
-                    </div>
-                    <p className="mt-3 text-sm text-moss-700">
-                      <span className="font-medium text-moss-900">Validation:</span>{" "}
-                      {step.validation.ok ? "ok" : "attention"} {step.validation.message}
-                    </p>
-                  </article>
-                ))
-              ) : (
-                <p className="text-sm text-moss-700">No trace yet.</p>
-              )}
-            </div>
-          </section>
-        </section>
-      </section>
-
-      <section className="glass-card mt-5 p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold text-moss-900">Structured Payload</h2>
-            <p className="text-sm text-moss-600">
-              Useful during review to show contracts and fallback behavior directly.
-            </p>
+            ) : null}
           </div>
-          {analysis?.matching?.jd_match_overview?.header?.overall_match ? (
-            <span className="rounded-full bg-moss-900 px-3 py-1 text-[0.72rem] uppercase tracking-[0.16em] text-white">
-              {analysis.matching.jd_match_overview.header.overall_match.percent}% match
-            </span>
+          <WorkflowStepper
+            events={events}
+            isComplete={Boolean(analysis)}
+            steps={candidateSource === "existing" ? storedCandidateMatchingSteps : matchingSteps}
+          />
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Match Result</h2>
+            <p>{runInfo ? `Run ${runInfo.run_id}` : "Waiting for a run."}</p>
+          </div>
+          {overview?.header?.overall_match ? (
+            <span className="score-badge">{overview.header.overall_match.percent}%</span>
           ) : null}
         </div>
-        <pre className="mt-4 overflow-auto rounded-3xl bg-moss-900 p-4 text-xs leading-6 text-moss-50">
-          {analysis ? JSON.stringify(analysis, null, 2) : "Waiting for orchestration output."}
-        </pre>
-      </section>
-    </main>
+        {overview ? (
+          <div className="result-summary">
+            <h3>{overview.sections?.overall_ai_analysis?.headline || overview.header?.jd_title}</h3>
+            <p>{overview.sections?.overall_ai_analysis?.overall_summary}</p>
+            <div className="stat-list compact">
+              <div>
+                <span>Fit</span>
+                <strong>{overview.sections?.overall_ai_analysis?.overall_fit_level || "N/A"}</strong>
+              </div>
+              <div>
+                <span>Next step</span>
+                <strong>{overview.sections?.overall_ai_analysis?.ideal_next_step || "N/A"}</strong>
+              </div>
+            </div>
+          </div>
+          ) : (
+          <p className="muted result-placeholder">Select a candidate or upload a resume, then choose an opening to populate the analysis.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SettingsPage() {
+  const [form, setForm] = useState({
+    max_cost_usd: "",
+    max_latency_seconds: "",
+  });
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    fetch(`${apiBase}/api/settings/containment`)
+      .then(parseJson)
+      .then((payload) => {
+        setForm({
+          max_cost_usd: payload.max_cost_usd ?? "",
+          max_latency_seconds: payload.max_latency_seconds ?? "",
+        });
+      })
+      .catch((err) => setError(err.message));
+  }, []);
+
+  function updateField(field, value) {
+    setSaved(false);
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function numericOrNull(value) {
+    return value === "" ? null : Number(value);
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+    setSaved(false);
+    setIsSaving(true);
+    try {
+      const payload = await fetch(`${apiBase}/api/settings/containment`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          max_cost_usd: numericOrNull(form.max_cost_usd),
+          max_latency_seconds: numericOrNull(form.max_latency_seconds),
+        }),
+      }).then(parseJson);
+      setForm({
+        max_cost_usd: payload.max_cost_usd ?? "",
+        max_latency_seconds: payload.max_latency_seconds ?? "",
+      });
+      setSaved(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <section className="workflow-page">
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">Administration</span>
+          <h1>Settings</h1>
+        </div>
+      </div>
+      <div className="panel narrow-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Containment Limits</h2>
+            <p>Applied when new CrewAI workflow runs start.</p>
+          </div>
+        </div>
+        <form className="form-stack form-offset" onSubmit={submit}>
+          <label>
+            <span>Max token cost USD</span>
+            <input
+              className="field"
+              min="0"
+              step="0.001"
+              type="number"
+              value={form.max_cost_usd}
+              onChange={(event) => updateField("max_cost_usd", event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Max latency seconds</span>
+            <input
+              className="field"
+              min="0"
+              step="1"
+              type="number"
+              value={form.max_latency_seconds}
+              onChange={(event) => updateField("max_latency_seconds", event.target.value)}
+            />
+          </label>
+          <button className="primary-button" disabled={isSaving} type="submit">
+            {isSaving ? "Saving..." : "Save Settings"}
+          </button>
+        </form>
+        {error ? <p className="error-box">{error}</p> : null}
+        {saved ? <p className="success-box">Containment settings updated.</p> : null}
+      </div>
+    </section>
+  );
+}
+
+export default function App() {
+  const [activePage, setActivePage] = useState("dashboard");
+  const [health, setHealth] = useState(null);
+  const [dashboard, setDashboard] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [error, setError] = useState("");
+
+  async function refreshHealth() {
+    try {
+      setHealth(await fetch(`${apiBase}/health`).then(parseJson));
+    } catch (err) {
+      setHealth({ status: "degraded", services: {}, error: err.message });
+    }
+  }
+
+  async function refreshDashboard() {
+    try {
+      setDashboard(await fetch(`${apiBase}/api/recruitment/dashboard`).then(parseJson));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function refreshJobs() {
+    try {
+      const payload = await fetch(`${apiBase}/api/recruitment/job-openings`).then(parseJson);
+      setJobs(payload.job_openings || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function refreshCandidates() {
+    try {
+      const payload = await fetch(`${apiBase}/api/recruitment/candidates`).then(parseJson);
+      setCandidates(payload.candidates || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    refreshHealth();
+    refreshDashboard();
+    refreshCandidates();
+    refreshJobs();
+    const timer = window.setInterval(refreshHealth, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const page = {
+    dashboard: <Dashboard dashboard={dashboard} refreshDashboard={refreshDashboard} />,
+    candidates: (
+      <CandidatesPage
+        candidates={candidates}
+        refreshCandidates={refreshCandidates}
+        refreshDashboard={refreshDashboard}
+      />
+    ),
+    jobs: <JobOpeningsPage jobs={jobs} refreshJobs={refreshJobs} refreshDashboard={refreshDashboard} />,
+    matching: <MatchingPage candidates={candidates} jobs={jobs} refreshDashboard={refreshDashboard} />,
+    settings: <SettingsPage />,
+  }[activePage];
+
+  return (
+    <Shell activePage={activePage} health={health} setActivePage={setActivePage}>
+      {error ? <p className="error-box global-error">{error}</p> : null}
+      {page}
+    </Shell>
   );
 }

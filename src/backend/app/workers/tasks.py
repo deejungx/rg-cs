@@ -1,4 +1,6 @@
 from app.services.orchestration_progress_service import orchestration_progress_service
+from src.ai.events.progress_listener import ensure_progress_listener
+from src.ai.events.runtime_context import current_run_id, current_stage
 from src.ai.pipelines.cv_extraction_flow import run_cv_extraction_flow
 from src.ai.pipelines.candidate_analysis_flow import run_candidate_analysis
 
@@ -7,12 +9,57 @@ from app.workers.celery_app import celery_app
 
 @celery_app.task(name="app.workers.tasks.extract_cv")
 def extract_cv(candidate_id: str, source_path: str, filename: str, content_type: str) -> dict[str, object]:
-    return run_cv_extraction_flow(
-        candidate_id=candidate_id,
-        source_path=source_path,
-        filename=filename,
-        content_type=content_type,
+    ensure_progress_listener()
+    run_id = extract_cv.request.id
+    orchestration_progress_service.set_status(run_id, status="running")
+    orchestration_progress_service.publish_event(
+        run_id,
+        {
+            "run_id": run_id,
+            "type": "run_started",
+            "label": "resume_extraction",
+            "stage": "resume_extraction",
+            "message": "Resume extraction started.",
+        },
     )
+    run_token = current_run_id.set(run_id)
+    stage_token = current_stage.set("resume_extraction")
+    try:
+        result = run_cv_extraction_flow(
+            candidate_id=candidate_id,
+            source_path=source_path,
+            filename=filename,
+            content_type=content_type,
+        )
+        orchestration_progress_service.set_status(run_id, status="completed", result=result)
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": "run_completed",
+                "label": "resume_extraction",
+                "stage": "resume_extraction",
+                "message": "Resume extraction completed.",
+            },
+        )
+        return result
+    except Exception as exc:
+        orchestration_progress_service.set_status(run_id, status="failed", error=str(exc))
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": "run_failed",
+                "label": "resume_extraction",
+                "stage": "resume_extraction",
+                "error": str(exc),
+                "message": "Resume extraction failed.",
+            },
+        )
+        raise
+    finally:
+        current_stage.reset(stage_token)
+        current_run_id.reset(run_token)
 
 
 @celery_app.task(name="app.workers.tasks.run_candidate_analysis")

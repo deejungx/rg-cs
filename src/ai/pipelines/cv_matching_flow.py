@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.core.config import settings
+from app.services.orchestration_progress_service import orchestration_progress_service
+from src.ai.events.runtime_context import current_run_id, current_stage
 from src.ai.providers import get_model_provider
 from src.ai.tracing.run_logger import append_log
 from src.shared import CrewAIRunLimits
@@ -63,6 +65,26 @@ _SKILL_ALIASES = {
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _publish_progress(event_type: str, label: str, message: str = "") -> None:
+    run_id = current_run_id.get()
+    if not run_id:
+        return
+    try:
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": event_type,
+                "label": label,
+                "stage": label,
+                "message": message,
+                "timestamp": _utc_now(),
+            },
+        )
+    except Exception:
+        return
 
 
 def _normalize_token(value: str) -> str:
@@ -855,7 +877,17 @@ def run_cv_matching_flow(
             else max_latency_seconds
         ),
     )
+    _publish_progress(
+        "step_started",
+        "build_matching_context",
+        "Building candidate and vacancy comparison context.",
+    )
     context = _build_context(request)
+    _publish_progress(
+        "step_completed",
+        "build_matching_context",
+        "Candidate and vacancy context prepared.",
+    )
     token_usage: dict[str, int] = {}
     estimated_cost_usd = 0.0
     elapsed_seconds = 0.0
@@ -864,15 +896,49 @@ def run_cv_matching_flow(
         from src.ai.crews.cv_matching_crew import CvMatchingCrew
 
         crew = CvMatchingCrew(run_limits=run_limits)
-        analyst_output, summary_output = crew.run_match_analysis(context)
+        _publish_progress(
+            "step_started",
+            "run_match_analysis",
+            "Running AI match analysis.",
+        )
+        stage_token = current_stage.set("run_match_analysis")
+        try:
+            analyst_output, summary_output = crew.run_match_analysis(context)
+        finally:
+            current_stage.reset(stage_token)
+        _publish_progress(
+            "step_completed",
+            "run_match_analysis",
+            "AI match analysis completed.",
+        )
         token_usage = crew.token_usage
         estimated_cost_usd = crew.estimated_cost_usd
         elapsed_seconds = crew.elapsed_seconds
     else:
+        _publish_progress(
+            "step_started",
+            "run_match_analysis",
+            "Running deterministic match analysis.",
+        )
         analyst_output = _fallback_analyst_output(context)
         summary_output = _fallback_summary_output(context, analyst_output)
+        _publish_progress(
+            "step_completed",
+            "run_match_analysis",
+            "Deterministic match analysis completed.",
+        )
 
+    _publish_progress(
+        "step_started",
+        "assemble_match_results",
+        "Assembling recruiter-facing match result.",
+    )
     response = _assemble_response(context, analyst_output, summary_output)
+    _publish_progress(
+        "step_completed",
+        "assemble_match_results",
+        "Match result assembled.",
+    )
     append_log(
         run_id=context.cv_data.id,
         event={

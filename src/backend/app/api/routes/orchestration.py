@@ -2,17 +2,38 @@ import json
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import task_queue, upload_service
+from app.api.deps import task_queue, upload_service, workspace_service
 from app.services.orchestration_progress_service import (
     orchestration_progress_service,
 )
-from src.ai.pipelines.candidate_analysis_flow import run_candidate_analysis
-from src.shared.schemas import CandidateAnalysisResponse
+from src.ai.events.progress_listener import ensure_progress_listener
+from src.ai.events.runtime_context import current_run_id
+from src.ai.pipelines.candidate_analysis_flow import (
+    _build_vacancy_data,
+    _profile_to_cv_data,
+    run_candidate_analysis,
+)
+from src.ai.pipelines.cv_matching_flow import run_cv_matching_flow
+from src.shared.schemas import (
+    CVMatchingRequest,
+    CandidateAnalysisResponse,
+    ComprehensiveCvProfile,
+)
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
+
+
+class StoredCandidateMatchRequest(BaseModel):
+    candidate_id: str
+    job_title: str
+    job_description: str = ""
+    company_name: str = ""
+    location: str = ""
+    skills_csv: str = ""
 
 
 @router.post("/analyze", response_model=CandidateAnalysisResponse)
@@ -91,6 +112,118 @@ def get_candidate_analysis_run(run_id: str) -> dict[str, object]:
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Unknown run id: {run_id}")
     return payload
+
+
+def _run_stored_candidate_match(
+    *,
+    run_id: str,
+    request: StoredCandidateMatchRequest,
+    profile_json: str,
+) -> None:
+    ensure_progress_listener()
+    run_token = current_run_id.set(run_id)
+    try:
+        orchestration_progress_service.set_status(run_id, status="running")
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": "run_started",
+                "label": "stored_candidate_match",
+                "stage": "stored_candidate_match",
+                "message": "Started match analysis for stored candidate.",
+            },
+        )
+        profile = ComprehensiveCvProfile.model_validate_json(profile_json)
+        vacancy = _build_vacancy_data(
+            title=request.job_title,
+            description=request.job_description,
+            company_name=request.company_name,
+            location=request.location,
+            skills_csv=request.skills_csv,
+        )
+        matching_payload = run_cv_matching_flow(
+            CVMatchingRequest(
+                cv_data=_profile_to_cv_data(
+                    candidate_id=request.candidate_id,
+                    profile=profile,
+                ),
+                vacancy_data=vacancy,
+            )
+        )
+        result = {
+            "analysis_id": run_id,
+            "candidate_id": request.candidate_id,
+            "extraction": None,
+            "vacancy": vacancy.model_dump(mode="json"),
+            "matching": matching_payload,
+            "trace": [],
+        }
+        orchestration_progress_service.set_status(run_id, status="completed", result=result)
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": "run_completed",
+                "label": "stored_candidate_match",
+                "stage": "stored_candidate_match",
+                "message": "Match analysis completed.",
+            },
+        )
+    except Exception as exc:
+        orchestration_progress_service.set_status(run_id, status="failed", error=str(exc))
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": "run_failed",
+                "label": "stored_candidate_match",
+                "stage": "stored_candidate_match",
+                "error": str(exc),
+                "message": "Match analysis failed.",
+            },
+        )
+    finally:
+        current_run_id.reset(run_token)
+
+
+@router.post("/stored-candidate-runs")
+def create_stored_candidate_match_run(
+    request: StoredCandidateMatchRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    structured_path = f"candidates/{request.candidate_id}/resume_structured.json"
+    try:
+        profile_payload = workspace_service.read_workspace_path(structured_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown candidate id: {request.candidate_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    run_id = f"match-{uuid4()}"
+    orchestration_progress_service.create_run(
+        run_id=run_id,
+        candidate_id=request.candidate_id,
+        filename="stored_candidate",
+    )
+    orchestration_progress_service.set_status(run_id, status="queued")
+    orchestration_progress_service.publish_event(
+        run_id,
+        {
+            "run_id": run_id,
+            "type": "run_queued",
+            "label": "stored_candidate_match",
+            "stage": "stored_candidate_match",
+            "message": "Stored candidate match analysis queued.",
+        },
+    )
+    background_tasks.add_task(
+        _run_stored_candidate_match,
+        run_id=run_id,
+        request=request,
+        profile_json=str(profile_payload["content"]),
+    )
+    return {"run_id": run_id, "task_id": "", "candidate_id": request.candidate_id}
 
 
 @router.get("/runs/{run_id}/events")

@@ -10,6 +10,7 @@ class TaskQueueService:
     def enqueue_cv_extraction(
         self,
         *,
+        task_id: str | None = None,
         candidate_id: str,
         source_path: str,
         filename: str,
@@ -17,6 +18,7 @@ class TaskQueueService:
     ):
         return self.app.send_task(
             "app.workers.tasks.extract_cv",
+            task_id=task_id,
             kwargs={
                 "candidate_id": candidate_id,
                 "source_path": source_path,

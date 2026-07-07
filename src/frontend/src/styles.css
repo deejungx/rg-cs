@@ -4,32 +4,608 @@
 
 @layer base {
   :root {
-    font-family: "Space Grotesk", "Segoe UI", sans-serif;
-    color: #10231b;
-    background:
-      radial-gradient(circle at top left, rgba(255, 215, 138, 0.45), transparent 32%),
-      linear-gradient(135deg, #f7f2e8 0%, #d7e6dc 48%, #bfd5cb 100%);
+    font-family: Inter, "Segoe UI", sans-serif;
+    color: #18211f;
+    background: #eef1ee;
   }
 
   body {
-    @apply min-h-screen bg-transparent text-moss-900 font-body;
+    @apply min-h-screen bg-transparent text-stone-900;
   }
 
   #root {
     @apply min-h-screen;
   }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
 }
 
 @layer components {
-  .glass-card {
-    @apply rounded-3xl border border-moss-900/10 bg-white/70 shadow-glass backdrop-blur;
+  .app-shell {
+    @apply min-h-screen bg-stone-100 pl-0 pt-14 lg:pl-64;
+  }
+
+  .health-strip {
+    @apply fixed left-0 right-0 top-0 z-30 flex h-14 items-center justify-between border-b border-stone-300 bg-white px-4 lg:px-6;
+  }
+
+  .health-brand,
+  .health-services,
+  .health-chip,
+  .side-header,
+  .nav-item,
+  .panel-heading,
+  .workflow-list div {
+    @apply flex items-center;
+  }
+
+  .health-brand {
+    @apply gap-3 text-sm text-stone-800;
+  }
+
+  .brand-mark {
+    @apply grid size-8 place-items-center rounded-md bg-teal-700 text-xs font-bold text-white;
+  }
+
+  .brand-mark.large {
+    @apply size-10;
+  }
+
+  .health-services {
+    @apply gap-2 overflow-x-auto;
+  }
+
+  .health-chip {
+    @apply h-8 shrink-0 gap-2 rounded-md border border-stone-300 bg-stone-50 px-3 text-xs font-medium capitalize text-stone-700;
+  }
+
+  .status-dot {
+    @apply size-2 rounded-full bg-amber-500;
+  }
+
+  .status-ok {
+    @apply bg-emerald-600 text-emerald-800;
+  }
+
+  .status-bad {
+    @apply bg-red-600 text-red-800;
+  }
+
+  .status-warn {
+    @apply bg-amber-500 text-amber-800;
+  }
+
+  .side-panel {
+    @apply fixed bottom-0 left-0 top-14 z-20 hidden w-64 border-r border-stone-300 bg-stone-950 p-4 text-white lg:block;
+  }
+
+  .side-header {
+    @apply gap-3 border-b border-white/10 pb-4;
+  }
+
+  .side-header strong {
+    @apply block text-sm;
+  }
+
+  .side-header span:not(.brand-mark) {
+    @apply block text-xs text-stone-400;
+  }
+
+  .side-nav {
+    @apply mt-5 grid gap-2;
+  }
+
+  .nav-item {
+    @apply h-11 gap-3 rounded-md px-3 text-left text-sm text-stone-300 transition hover:bg-white/10 hover:text-white;
+  }
+
+  .nav-item span {
+    @apply grid size-7 place-items-center rounded bg-white/10 text-xs font-semibold;
+  }
+
+  .nav-item.active {
+    @apply bg-white text-stone-950 shadow;
+  }
+
+  .nav-item.active span {
+    @apply bg-teal-700 text-white;
+  }
+
+  .main-panel {
+    @apply mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8;
+  }
+
+  .page-stack,
+  .workflow-page {
+    @apply grid gap-5;
+  }
+
+  .page-title {
+    @apply flex flex-wrap items-end justify-between gap-4;
+  }
+
+  .page-title h1 {
+    @apply text-3xl font-semibold tracking-normal text-stone-950;
+  }
+
+  .eyebrow {
+    @apply block text-xs font-semibold uppercase tracking-wider text-teal-700;
+  }
+
+  .metric-grid {
+    @apply grid gap-4 sm:grid-cols-2 xl:grid-cols-5;
+  }
+
+  .metric-card,
+  .panel {
+    @apply rounded-lg border border-stone-300 bg-white shadow-sm;
+  }
+
+  .metric-card {
+    @apply min-h-36 p-4;
+  }
+
+  .metric-card strong {
+    @apply mt-3 block text-3xl font-semibold text-stone-950;
+  }
+
+  .metric-card p {
+    @apply mt-2 text-sm text-stone-600;
+  }
+
+  .tone-green {
+    @apply border-emerald-200 bg-emerald-50;
+  }
+
+  .tone-red {
+    @apply border-red-200 bg-red-50;
+  }
+
+  .tone-blue {
+    @apply border-sky-200 bg-sky-50;
+  }
+
+  .split-grid {
+    @apply grid gap-5 xl:grid-cols-2;
+  }
+
+  .panel {
+    @apply p-5;
+  }
+
+  .narrow-panel {
+    @apply max-w-3xl;
+  }
+
+  .panel-heading {
+    @apply justify-between gap-4 border-b border-stone-200 pb-4;
+  }
+
+  .panel-heading h2 {
+    @apply text-lg font-semibold text-stone-950;
+  }
+
+  .panel-heading p,
+  .muted {
+    @apply text-sm text-stone-600;
+  }
+
+  .stat-list {
+    @apply mt-4 grid gap-3 sm:grid-cols-3;
+  }
+
+  .stat-list.compact {
+    @apply sm:grid-cols-2;
+  }
+
+  .stat-list div {
+    @apply rounded-md border border-stone-200 bg-stone-50 p-4;
+  }
+
+  .stat-list span {
+    @apply block text-xs font-semibold uppercase tracking-wider text-stone-500;
+  }
+
+  .stat-list strong {
+    @apply mt-2 block text-xl font-semibold text-stone-950;
+  }
+
+  .workflow-list {
+    @apply mt-4 grid gap-3;
+  }
+
+  .workflow-list div {
+    @apply grid grid-cols-[auto_1fr_auto] gap-3 rounded-md border border-stone-200 bg-stone-50 p-3 text-sm;
+  }
+
+  .workflow-list strong {
+    @apply text-xs uppercase tracking-wider text-stone-500;
+  }
+
+  .table-panel {
+    @apply overflow-hidden p-0;
+  }
+
+  .table-panel .panel-heading {
+    @apply m-5 mb-0;
+  }
+
+  .table-wrap {
+    @apply mt-4 overflow-x-auto;
+  }
+
+  table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  th {
+    @apply border-y border-stone-200 bg-stone-50 px-4 py-3 text-xs font-semibold uppercase tracking-wider text-stone-500;
+  }
+
+  td {
+    @apply border-b border-stone-200 px-4 py-3 text-stone-700;
+  }
+
+  td strong {
+    @apply block font-semibold text-stone-950;
+  }
+
+  .table-subtext {
+    @apply mt-1 block font-mono text-xs text-stone-500;
+  }
+
+  .mono {
+    @apply font-mono text-xs;
+  }
+
+  .status-pill {
+    @apply inline-flex rounded-md px-2 py-1 text-xs font-semibold capitalize;
+  }
+
+  .form-stack {
+    @apply grid gap-4;
+  }
+
+  .form-offset {
+    @apply mt-4;
+  }
+
+  .form-grid {
+    @apply grid gap-4 md:grid-cols-2;
+  }
+
+  label span {
+    @apply mb-2 block text-sm font-medium text-stone-700;
   }
 
   .field {
-    @apply w-full rounded-2xl border border-moss-900/15 bg-white/90 px-4 py-3 text-sm text-moss-900 outline-none transition focus:border-moss-500 focus:ring-2 focus:ring-moss-300/40;
+    @apply w-full rounded-md border border-stone-300 bg-white px-3 py-2.5 text-sm text-stone-950 outline-none transition focus:border-teal-600 focus:ring-2 focus:ring-teal-100;
   }
 
-  .meta-label {
-    @apply block text-[0.72rem] uppercase tracking-[0.18em] text-moss-600;
+  .compact-field {
+    @apply h-10 py-2;
+  }
+
+  .min-h {
+    @apply min-h-44 resize-y;
+  }
+
+  .tall-textarea {
+    @apply min-h-80;
+  }
+
+  .segmented-control {
+    @apply grid grid-cols-2 rounded-md border border-stone-300 bg-stone-100 p-1;
+  }
+
+  .segmented-control button {
+    @apply h-10 rounded px-3 text-sm font-semibold text-stone-600 transition;
+  }
+
+  .segmented-control button.active {
+    @apply bg-white text-teal-800 shadow-sm;
+  }
+
+  .primary-button,
+  .secondary-button {
+    @apply inline-flex h-11 items-center justify-center rounded-md px-4 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-60;
+  }
+
+  .primary-button {
+    @apply bg-teal-700 text-white hover:bg-teal-800;
+  }
+
+  .secondary-button {
+    @apply border border-stone-300 bg-white text-stone-800 hover:bg-stone-50;
+  }
+
+  .compact-button {
+    @apply h-10 px-3;
+  }
+
+  .error-box,
+  .success-box {
+    @apply mt-4 rounded-md px-4 py-3 text-sm;
+  }
+
+  .error-box {
+    @apply border border-red-200 bg-red-50 text-red-800;
+  }
+
+  .success-box {
+    @apply border border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+
+  .global-error {
+    @apply mb-5 mt-0;
+  }
+
+  .result-box {
+    @apply mt-5 grid gap-4;
+  }
+
+  .result-box strong {
+    @apply text-xl text-stone-950;
+  }
+
+  .result-box pre {
+    @apply max-h-[36rem] overflow-auto rounded-md bg-stone-950 p-4 text-xs leading-6 text-stone-100;
+  }
+
+  .code-block {
+    @apply mt-4 max-h-[40rem] overflow-auto rounded-md bg-stone-950 p-4 text-xs leading-6 text-stone-100;
+  }
+
+  .stepper {
+    @apply mt-4 grid gap-3;
+  }
+
+  .step-item {
+    @apply flex min-h-12 items-center gap-3 rounded-md border px-3 py-2 text-sm font-medium;
+  }
+
+  .step-item.pending {
+    @apply border-stone-200 bg-stone-50 text-stone-400;
+  }
+
+  .step-item.current {
+    @apply border-sky-200 bg-sky-50 text-sky-900;
+  }
+
+  .step-item.completed {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-900;
+  }
+
+  .step-item.failed {
+    @apply border-red-200 bg-red-50 text-red-900;
+  }
+
+  .step-marker {
+    @apply grid size-7 shrink-0 place-items-center rounded-full border text-sm font-bold;
+  }
+
+  .step-copy {
+    @apply grid gap-1;
+  }
+
+  .step-usage {
+    @apply font-mono text-xs font-normal text-stone-500;
+  }
+
+  .pending .step-marker {
+    @apply border-stone-300 bg-white text-stone-400;
+  }
+
+  .completed .step-marker {
+    @apply border-emerald-600 bg-emerald-600 text-white;
+  }
+
+  .failed .step-marker {
+    @apply border-red-600 bg-red-600 text-white;
+  }
+
+  .current .step-marker {
+    @apply border-sky-600;
+  }
+
+  .current .step-marker::after {
+    @apply block size-3 rounded-full bg-sky-600;
+    content: "";
+    animation: pulse-step 1s ease-in-out infinite;
+  }
+
+  .job-list {
+    @apply mt-4 grid gap-3;
+  }
+
+  .quality-stack {
+    @apply mt-4 grid gap-5;
+  }
+
+  .quality-summary {
+    @apply mt-4 grid gap-4 rounded-md border border-stone-200 bg-stone-50 p-4 md:grid-cols-[9rem_1fr];
+  }
+
+  .quality-score {
+    @apply rounded-md border border-stone-200 bg-stone-50 p-4;
+  }
+
+  .quality-score span {
+    @apply block text-xs font-semibold uppercase tracking-wider text-stone-500;
+  }
+
+  .quality-score strong {
+    @apply mt-2 block text-3xl font-semibold text-stone-950;
+  }
+
+  .quality-score.compact {
+    @apply border-0 bg-transparent p-0;
+  }
+
+  .quality-score.compact strong {
+    @apply text-2xl;
+  }
+
+  .tag-row {
+    @apply mt-3 flex flex-wrap gap-2;
+  }
+
+  .warning-tag,
+  .ok-tag {
+    @apply rounded-md px-2.5 py-1 text-xs font-semibold;
+  }
+
+  .warning-tag {
+    @apply bg-amber-100 text-amber-800;
+  }
+
+  .ok-tag {
+    @apply bg-emerald-100 text-emerald-800;
+  }
+
+  .job-list article,
+  .selected-job,
+  .trace-grid article {
+    @apply rounded-md border border-stone-200 bg-stone-50 p-4;
+  }
+
+  .job-card-header {
+    @apply flex flex-wrap items-start justify-between gap-3;
+  }
+
+  .job-card-actions {
+    @apply mt-4 flex flex-wrap items-end gap-3;
+  }
+
+  .circle-checkbox-control {
+    @apply inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-stone-300 bg-white px-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50;
+  }
+
+  .circle-checkbox-control input {
+    @apply sr-only;
+  }
+
+  .circle-checkbox-control input:disabled + .circle-checkbox {
+    @apply opacity-60;
+  }
+
+  .circle-checkbox-control input:focus-visible + .circle-checkbox {
+    @apply ring-2 ring-teal-200 ring-offset-2;
+  }
+
+  .circle-checkbox {
+    @apply grid size-5 shrink-0 place-items-center rounded-full border-2 border-stone-400 bg-white transition;
+  }
+
+  .circle-checkbox::after {
+    @apply block size-2.5 rounded-full bg-transparent transition;
+    content: "";
+  }
+
+  .circle-checkbox-control input:checked + .circle-checkbox {
+    @apply border-emerald-600 bg-emerald-50;
+  }
+
+  .circle-checkbox-control input:checked + .circle-checkbox::after {
+    @apply bg-emerald-600;
+  }
+
+  .job-list h3,
+  .result-summary h3 {
+    @apply text-base font-semibold text-stone-950;
+  }
+
+  .job-list p,
+  .selected-job p,
+  .trace-grid p,
+  .result-summary p {
+    @apply mt-1 text-sm text-stone-600;
+  }
+
+  .job-list article > span,
+  .trace-grid span {
+    @apply mt-3 block font-mono text-xs text-stone-500;
+  }
+
+  .selected-job {
+    @apply max-h-56 overflow-auto;
+  }
+
+  .score-badge {
+    @apply rounded-md bg-teal-700 px-3 py-2 text-sm font-bold text-white;
+  }
+
+  .result-summary {
+    @apply mt-4;
+  }
+
+  .trace-grid {
+    @apply mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3;
+  }
+
+  .trace-grid strong {
+    @apply block capitalize text-stone-950;
+  }
+
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 grid place-items-center bg-stone-950/60 p-4;
+  }
+
+  .modal-panel {
+    @apply max-h-[90vh] w-full max-w-4xl overflow-auto rounded-lg border border-stone-300 bg-white p-5 shadow-xl;
+  }
+
+  .modal-summary {
+    @apply mt-4 grid gap-3 sm:grid-cols-3;
+  }
+
+  .modal-summary div {
+    @apply rounded-md border border-stone-200 bg-stone-50 p-3;
+  }
+
+  .modal-summary span {
+    @apply block text-xs font-semibold uppercase tracking-wider text-stone-500;
+  }
+
+  .modal-summary strong {
+    @apply mt-1 block text-sm capitalize text-stone-950;
+  }
+
+  .side-toast-pill {
+    @apply fixed right-4 top-24 z-50 max-w-xs rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 shadow-lg;
+    animation: side-pill-fade 5s ease forwards;
+  }
+}
+
+@keyframes pulse-step {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes side-pill-fade {
+  0% {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+  10%,
+  82% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(1rem);
   }
 }

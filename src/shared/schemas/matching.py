@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class MatchingBaseModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        populate_by_name=True,
+    )
 
 
 class SalaryRange(MatchingBaseModel):
@@ -23,23 +34,40 @@ class DateModel(MatchingBaseModel):
 
 
 class WorkExperience(MatchingBaseModel):
-    organization_name: str = ""
+    organization_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("organization_name", "organizationName"),
+    )
     industry: str = ""
     position: str = ""
-    still_working: bool | None = None
+    still_working: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("still_working", "stillWorking"),
+    )
     start: DateModel | None = None
     end: DateModel | None = None
-    key_responsibilities: list[str] = Field(default_factory=list)
+    key_responsibilities: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("key_responsibilities", "keyResponsibilities"),
+    )
     tools: list[str] = Field(default_factory=list)
 
 
 class EducationItem(MatchingBaseModel):
-    title: str = ""
-    institution_name: str = ""
-    institution_address: str = ""
+    title: str | None = None
+    institution_name: str | None = None
+    institution_address: str | None = None
     still_studying: bool | None = None
     start: DateModel | None = None
     end: DateModel | None = None
+    start_date: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("start_date", "startDate"),
+    )
+    end_date: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("end_date", "endDate"),
+    )
 
 
 class CVData(MatchingBaseModel):
@@ -63,11 +91,21 @@ class CVData(MatchingBaseModel):
     skills: list[str] = Field(default_factory=list)
     about_me: str = ""
     current_status: str = ""
+    date_of_birth: str | None = None
     gender: str = ""
     two_wheeler: bool | None = None
     driving_license: bool | None = None
-    note: str = ""
+    type: str | None = None
+    is_verified: bool | None = None
+    profile_picture: str | None = None
+    job_tags: Any | None = None
+    preference: dict[str, Any] | None = None
+    note: str | None = None
+    notes: list[Any] = Field(default_factory=list)
+    trainings: list[Any] = Field(default_factory=list)
+    projects: list[Any] = Field(default_factory=list)
     salary_expectation: SalaryRange | None = None
+    total_experience_months: int | None = None
 
     @model_validator(mode="after")
     def populate_full_name(self) -> "CVData":
@@ -92,13 +130,16 @@ class VacancyData(MatchingBaseModel):
     description: str = ""
     category: str = ""
     company_name: str = ""
+    company_size: str | None = None
+    about_company: str | None = None
     company_industry: str = ""
     education_level: str = ""
     skills_required: list[str] = Field(default_factory=list)
-    key_responsibilities: list[str] | str | None = None
+    key_responsibilities: Any | None = None
     employment_type: list[str] = Field(default_factory=list)
     work_approach: list[str] = Field(default_factory=list)
     location: str = ""
+    openings: int | None = None
     experience_required: str | int | None = None
     experience_level: ExperienceLevel | None = None
     offered_salary: SalaryRange | None = None
@@ -106,6 +147,31 @@ class VacancyData(MatchingBaseModel):
     gender_preferred: str = ""
     vehicle_required: bool | None = None
     job_tags: list[str] = Field(default_factory=list)
+
+    @field_validator("openings", mode="before")
+    @classmethod
+    def coerce_openings(cls, value: int | str | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator(
+        "skills_required",
+        "employment_type",
+        "work_approach",
+        "job_tags",
+        mode="before",
+    )
+    @classmethod
+    def ensure_list(cls, value: list[str] | str | None) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [str(value)]
 
 
 class CVMatchingRequest(MatchingBaseModel):
@@ -141,16 +207,16 @@ class SalaryRangeResponse(MatchingBaseModel):
 
 class CandidateSnapshot(MatchingBaseModel):
     full_name: str
-    work_status: str = ""
-    phone: str = ""
+    work_status: str | None = None
+    phone: str | None = None
     email: str | None = None
-    designation: str = ""
+    designation: str | None = None
     salary_expectation: SalaryRangeResponse | None = None
 
 
 class MatchBadge(MatchingBaseModel):
     percent: int = Field(..., ge=0, le=100)
-    label: MatchLabel
+    label: MatchLabel | None = None
     severity: SeverityLabel
 
 
@@ -169,7 +235,7 @@ class CompanyLine(MatchingBaseModel):
 class Header(MatchingBaseModel):
     jd_title: str
     company_line: CompanyLine | None = None
-    overall_match: MatchBadge
+    overall_match: MatchBadge | None = None
     pills: list[Pill] = Field(default_factory=list)
 
 
@@ -191,7 +257,7 @@ class ExperienceJobRequirement(MatchingBaseModel):
 
 class CandidateProfile(MatchingBaseModel):
     headline: str
-    detail: str = ""
+    detail: str | None = None
 
 
 class ExperienceSection(MatchingBaseModel):
@@ -219,7 +285,7 @@ class SkillsSection(MatchingBaseModel):
     missing_or_weak_skills: list[str] = Field(default_factory=list)
     bonus_skills: list[str] = Field(default_factory=list)
     insight: Insight
-    coverage: SkillsCoverage
+    coverage: SkillsCoverage | None = None
 
 
 class OtherFactorItem(MatchingBaseModel):
@@ -247,11 +313,11 @@ class OverallAIAnalysis(MatchingBaseModel):
 
 
 class CriteriaRow(MatchingBaseModel):
-    criterion: str
+    criterion: str | None = None
     jd_requirement: str | None = None
     cv_summary: str | None = None
     label: MatchLabel
-    status_note: str
+    status_note: str | None = None
     score: int | None = Field(default=None, ge=0, le=100)
 
 

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     model_provider: str = "auto"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    serper_api_key: str = ""
     deepeval_enabled: bool = True
     pii_redaction_enabled: bool = True
     pii_redaction_language: str = "en"

@@ -100,3 +100,37 @@ def test_orchestration_events_endpoint_replays_existing_backlog(client, monkeypa
     assert response.status_code == 200
     assert '"type": "run_started"' in response.text
     assert '"type": "run_completed"' in response.text
+
+
+def test_orchestration_events_endpoint_emits_terminal_event_for_completed_status(client, monkeypatch) -> None:
+    monkeypatch.setattr(
+        orchestration_route.orchestration_progress_service,
+        "get_run",
+        lambda run_id: {
+            "run_id": run_id,
+            "status": "completed",
+            "result": {"ok": True},
+            "error": "",
+            "updated_at": "2026-07-06T00:00:01Z",
+        },
+    )
+    monkeypatch.setattr(
+        orchestration_route.orchestration_progress_service,
+        "get_events",
+        lambda run_id: [
+            {
+                "sequence": 1,
+                "run_id": run_id,
+                "type": "step_completed",
+                "label": "assemble_match_results",
+                "stage": "cv_matching",
+                "timestamp": "2026-07-06T00:00:00Z",
+            }
+        ],
+    )
+
+    response = client.get("/api/orchestration/runs/analysis-1/events")
+
+    assert response.status_code == 200
+    assert '"type": "step_completed"' in response.text
+    assert '"type": "run_completed"' in response.text

@@ -10,7 +10,6 @@
 - `make setup`: copies `.env.example` to `.env` and builds Docker images.
 - `make run`: starts the full stack with Docker Compose.
 - `make test`: runs the backend pytest suite inside the backend container.
-- `make eval-deepeval`: runs the opt-in DeepEval pytest entrypoint.
 - `cd src/backend && uv run pytest tests/test_pii_redaction_service.py`: run a focused backend test locally.
 
 ## Coding Style & Naming Conventions

@@ -1,6 +1,12 @@
-# Recruitment AI Scaffold
+# AutoRecruit Ops
 
-Docker Compose scaffold for a CV-processing AI workflow with a React frontend, FastAPI backend, Redis/Celery background jobs, Qdrant vector storage, Arize Phoenix tracing, and local `uploads/` plus `workspace/` runtime storage. The setup follows the same high-level pattern as the copied reference apps: frontend talks only to FastAPI, FastAPI enqueues Celery work, and the worker runs the AI orchestration separately.
+Recruitment agentic workflow app for resume extraction, job-opening curation and candidate-to-job matching. The stack uses React, FastAPI, Redis, Celery, CrewAI, Phoenix, Qdrant, and local `uploads/` plus `workspace/` storage.
+
+The runtime path is:
+
+```text
+React UI -> FastAPI routes -> Redis queue -> Celery/background worker -> ai execution -> workspace artifacts
+```
 
 ## Repository Layout
 
@@ -9,14 +15,60 @@ Makefile
 docker-compose.yml
 .env.example
 README.md
-uploads/
-workspace/
+AGENTS.md
+data/                         # sample resumes and UI sample manifest
+uploads/                      # uploaded source files, runtime only
+workspace/                    # generated candidate/job/match/run artifacts
 src/
-├── frontend/
-├── backend/
-├── ai/
-└── shared/
+├── backend/                  # FastAPI app, Celery worker, services, tests
+├── ai/                       # CrewAI crews, pipelines, prompts, tracing
+├── shared/                   # Pydantic schemas
+└── frontend/                 # React/Vite UI
 ```
+
+## Source Map
+
+### Backend: `src/backend`
+
+- `app/main.py`: FastAPI app assembly and route registration.
+- `app/api/routes/`: HTTP and SSE endpoints.
+  - `cv.py`: resume upload/extraction tasks and resume progress stream.
+  - `recruitment.py`: job-opening curation, job records, and job progress stream.
+  - `orchestration.py`: candidate analysis, stored-candidate matching, and match progress stream.
+  - `cv_matching.py`: direct CV matching endpoint.
+  - `workspace.py`: safe reads for generated workspace artifacts.
+  - `settings.py`, `samples.py`, `health.py`: supporting endpoints.
+- `app/services/`: file parsing, uploads, workspace IO, Redis progress events, Celery enqueueing, PII redaction, Qdrant, and sample data.
+- `app/workers/`: Celery app and task definitions.
+- `tests/`: backend pytest tests.
+
+### AI: `src/ai`
+
+- `pipelines/cv_extraction_flow.py`: resume parse, validation, structured extraction, missing-field review, markdown curation, persistence.
+- `pipelines/job_opening_flow.py`: job text/URL ingestion, validation, structured extraction, missing-field review, markdown curation, persistence.
+- `pipelines/cv_matching_flow.py`: matching context, parallel match analyses, overall synthesis, final response assembly, run logging.
+- `pipelines/candidate_analysis_flow.py`: uploaded-resume extraction plus matching orchestration.
+- `crews/`: CrewAI agents and tasks for extraction and matching.
+- `prompts/`: prompt builders and prompt text.
+- `events/`: CrewAI event listener and runtime context for SSE progress, guardrails, model names, token usage, and latency.
+- `formatters/`: Markdown renderers.
+- `providers/`: live model vs deterministic fallback selection.
+- `runtime/`: CrewAI cost/latency run limits.
+- `tracing/`: Phoenix setup, run logs, token/cost stats.
+
+### Shared: `src/shared`
+
+- `schemas/cv.py`: resume extraction schemas.
+- `schemas/job_opening.py`: job-opening schemas.
+- `schemas/matching.py`: matching request/response schemas.
+- `schemas/orchestration.py`: candidate analysis response schemas.
+- `crewai_limits.py`: AI runtime-limits.
+
+### Frontend: `src/frontend`
+
+- `src/App.jsx`: dashboard, candidates, job openings, matching, settings, progress trackers, artifact preview, and match result UI.
+- `src/styles.css`: Tailwind component classes.
+- `src/main.jsx`: React entrypoint.
 
 ## Services
 
@@ -32,7 +84,12 @@ src/
 make setup
 ```
 
-This copies `.env.example` to `.env` if needed and builds the Docker images. The Python services use `uv` for dependency management inside the containers.
+`make setup` copies `.env.example` to `.env` if needed, validates required API keys, and builds Docker images. Set these in `.env` or your shell before setup:
+
+- `OPENAI_API_KEY`
+- `SERPER_API_KEY`
+
+Python services use `uv` for dependency management inside containers.
 
 ## Run
 
@@ -40,23 +97,23 @@ This copies `.env.example` to `.env` if needed and builds the Docker images. The
 make run
 ```
 
-Main flows:
+Main UI flows:
 
-- Open the UI at http://localhost:8080
-- Load a shipped sample CV and JD, or upload your own CV
-- Run the orchestration flow
-- Inspect the structured result, model mode, and step-by-step trace
-
-Included sample data:
-
-- `data/good/happy_path_fullstack_resume.txt`: happy-path text resume
-- `data/bad/edge_case_ambiguous_resume.txt`: ambiguous edge-case resume
-- `data/samples.json`: manifest the frontend uses for one-click sample selection
+- Candidates: upload resumes, track extraction, preview generated Markdown and JSON.
+- Job Openings: curate job postings from pasted text or URLs.
+- Matching: match stored candidates or uploaded resumes against stored job openings.
+- Dashboard: inspect run health, totals, and recent generated records.
+- Settings: adjust AI run limits.
 
 Generated runtime files are written into:
 
 - `uploads/resumes/<candidate_id>/`
 - `workspace/candidates/<candidate_id>/`
+- `workspace/job_openings/<job_id>/`
+- `workspace/runs/<run_id>/`
+- `workspace/matches/`
+
+See [workspace/README.md](workspace/README.md) and [workspace/AGENTS.md](workspace/AGENTS.md) for artifact navigation rules.
 
 ## Test
 
@@ -64,42 +121,19 @@ Generated runtime files are written into:
 make test
 ```
 
-Included automated checks cover:
-
-- backend health endpoint
-- extraction enqueue endpoint
-- Celery task registration
-- CrewAI extraction flow artifact creation
-- workspace file creation
-
-## DeepEval
-
-DeepEval is integrated at the CrewAI layer. Every CrewAI kickoff in the CV extraction pipeline is instrumented through `instrument_crewai()`, and the project uses DeepEval's `Crew`, `Agent`, and `LLM` shims so eval spans can be attached without rewriting the crews.
-
-To run the opt-in resume-validation eval:
+Focused local checks:
 
 ```bash
-cd src/backend
-RUN_DEEPEVAL_EVALS=1 uv run deepeval test run tests/test_resume_validation_deepeval.py
-```
-
-Or from the repo root:
-
-```bash
-make eval-deepeval
+cd src/backend && uv run pytest tests/test_cv_flow.py
+cd src/backend && uv run pytest tests/test_cv_matching.py
+cd src/backend && uv run pytest tests/test_orchestration_runs_api.py
+cd src/frontend && npm run build
 ```
 
 ## Notes
 
-- `MODEL_PROVIDER` defaults to `auto`. With a valid `OPENAI_API_KEY`, the app uses OpenAI. Without a key, it falls back to deterministic mock mode so the app still runs end to end on a clean machine.
-- Set `OPENAI_API_KEY` in `.env` to enable CrewAI plus OpenAI inference for extraction and matching. If the key is empty, the UI and orchestration response explicitly show mock mode.
 - `OPENAI_MODEL` defaults to `gpt-4o-mini` and can be changed in `.env`.
-- `DEEPEVAL_ENABLED` defaults to `true`. Set it to `false` to disable DeepEval CrewAI instrumentation while keeping the rest of the pipeline unchanged.
-- `PII_REDACTION_ENABLED` defaults to `true`. Parsed resume text exposed through API responses and trace artifacts is redacted with Presidio before it leaves the flow, while the original parsed text is still used internally for CV extraction.
-- `PII_REDACTION_ENTITIES` defaults to `EMAIL_ADDRESS,PHONE_NUMBER,URL`, which keeps redaction deterministic and lightweight without requiring an external NLP model.
-- The CV extraction workflow is implemented as a CrewAI `Flow` in [src/ai/pipelines/cv_extraction_flow.py](/home/deejung/rg-cs/src/ai/pipelines/cv_extraction_flow.py), with shared schema definitions in [src/shared/schemas/cv.py](/home/deejung/rg-cs/src/shared/schemas/cv.py).
-- The browser-facing orchestration endpoint is implemented in [src/ai/pipelines/candidate_analysis_flow.py](/home/deejung/rg-cs/src/ai/pipelines/candidate_analysis_flow.py) and [src/backend/app/api/routes/orchestration.py](/home/deejung/rg-cs/src/backend/app/api/routes/orchestration.py).
-- Parsing is handled by `pypdf` and `python-docx` in [src/backend/app/services/file_parser.py](/home/deejung/rg-cs/src/backend/app/services/file_parser.py).
-- Text-based sample resumes (`.txt` and `.md`) are also supported for offline demo flows.
-- Phoenix tracing is initialized through OpenTelemetry and also mirrored into workspace trace files for easy inspection.
-- CrewAI and custom Flow spans are exported to the Phoenix project configured by `PHOENIX_PROJECT_NAME` (`default` unless overridden). The local collector endpoint is configured by `PHOENIX_COLLECTOR_ENDPOINT`.
+- `PII_REDACTION_ENABLED` defaults to `true`. Parsed resume text exposed through API responses and trace artifacts is redacted before leaving the flow, while original parsed text is used internally for extraction.
+- `PII_REDACTION_ENTITIES` defaults to `EMAIL_ADDRESS,PHONE_NUMBER,URL`.
+- Phoenix tracing is initialized through OpenTelemetry and mirrored into workspace trace/log files for inspection.
+- CrewAI and custom flow spans are exported to the Phoenix project configured by `PHOENIX_PROJECT_NAME`.

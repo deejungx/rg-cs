@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.services.file_parser import file_parser_service
 from app.services.pii_redaction_service import pii_redaction_service
 from app.services.workspace_service import workspace_service
+from src.ai.events.runtime_context import current_stage
 from src.ai.crews.cv_extraction_crew import CvExtractionCrew
 from src.ai.prompts.cv_extraction import CV_EXTRACTION_PROMPT, RESUME_VALIDATION_PROMPT
 from src.ai.tracing.phoenix import flush_phoenix, traced_operation
@@ -31,6 +32,10 @@ class CvExtractionState(BaseModel):
     structured_profile: ComprehensiveCvProfile | None = None
     structured_markdown: str = ""
     artifacts: CandidateArtifacts | None = None
+
+
+class InvalidResumeError(ValueError):
+    """Raised when validation determines the uploaded document is not a resume."""
 
 
 class CvExtractionFlow(Flow[CvExtractionState]):
@@ -59,9 +64,13 @@ class CvExtractionFlow(Flow[CvExtractionState]):
 
     @listen(parse_document)
     def validate_document(self, parsed: DocumentParseResult) -> ResumeValidationResult:
-        validation = self.crew.validate_resume(
-            RESUME_VALIDATION_PROMPT.format(document_text=parsed.source_text[:12000])
-        )
+        stage_token = current_stage.set("validate_document")
+        try:
+            validation = self.crew.validate_resume(
+                RESUME_VALIDATION_PROMPT.format(document_text=parsed.source_text[:12000])
+            )
+        finally:
+            current_stage.reset(stage_token)
         self.state.validation = validation
         return validation
 
@@ -70,29 +79,46 @@ class CvExtractionFlow(Flow[CvExtractionState]):
         self, validation: ResumeValidationResult
     ) -> ComprehensiveCvProfile:
         if not validation.is_resume:
-            profile = ComprehensiveCvProfile(
-                extraction_notes=[
-                    validation.reason or "Document did not validate as a CV."
-                ]
+            reason = validation.reason or "The validation step did not identify resume content."
+            raise InvalidResumeError(
+                f"Uploaded document does not appear to be a resume. {reason}"
             )
-            self.state.structured_profile = profile
-            return profile
 
-        profile = self.crew.extract_profile(
-            CV_EXTRACTION_PROMPT.format(
-                document_text=self.state.parsed.source_text[:20000]
+        stage_token = current_stage.set("extract_structured_profile")
+        try:
+            profile = self.crew.extract_profile(
+                CV_EXTRACTION_PROMPT.format(
+                    document_text=self.state.parsed.source_text[:20000]
+                )
             )
-        )
+        finally:
+            current_stage.reset(stage_token)
         self.state.structured_profile = profile
         return profile
 
     @listen(extract_structured_profile)
+    def review_missing_fields(
+        self, profile: ComprehensiveCvProfile
+    ) -> ComprehensiveCvProfile:
+        stage_token = current_stage.set("review_missing_fields")
+        try:
+            reviewed_profile = self.crew.review_missing_fields(profile)
+        finally:
+            current_stage.reset(stage_token)
+        self.state.structured_profile = reviewed_profile
+        return reviewed_profile
+
+    @listen(review_missing_fields)
     def curate_structured_markdown(self, profile: ComprehensiveCvProfile) -> str:
-        markdown = self.crew.curate_profile_markdown(
-            profile,
-            candidate_id=self.state.candidate_id,
-            source_file=self.state.filename,
-        )
+        stage_token = current_stage.set("curate_structured_markdown")
+        try:
+            markdown = self.crew.curate_profile_markdown(
+                profile,
+                candidate_id=self.state.candidate_id,
+                source_file=self.state.filename,
+            )
+        finally:
+            current_stage.reset(stage_token)
         self.state.structured_markdown = markdown
         append_log(
             run_id=self.state.candidate_id,

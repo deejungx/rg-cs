@@ -1,14 +1,14 @@
 from app.services.orchestration_progress_service import orchestration_progress_service
-from src.ai.events.progress_listener import ensure_progress_listener
-from src.ai.events.runtime_context import current_run_id, current_stage
-from src.ai.pipelines.cv_extraction_flow import run_cv_extraction_flow
-from src.ai.pipelines.candidate_analysis_flow import run_candidate_analysis
 
 from app.workers.celery_app import celery_app
 
 
 @celery_app.task(name="app.workers.tasks.extract_cv")
 def extract_cv(candidate_id: str, source_path: str, filename: str, content_type: str) -> dict[str, object]:
+    from src.ai.events.progress_listener import ensure_progress_listener
+    from src.ai.events.runtime_context import current_run_id, current_stage
+    from src.ai.pipelines.cv_extraction_flow import run_cv_extraction_flow
+
     ensure_progress_listener()
     run_id = extract_cv.request.id
     orchestration_progress_service.set_status(run_id, status="running")
@@ -75,6 +75,8 @@ def run_candidate_analysis_task(
     location: str,
     skills_csv: str,
 ) -> dict[str, object]:
+    from src.ai.pipelines.candidate_analysis_flow import run_candidate_analysis
+
     orchestration_progress_service.set_status(
         run_id,
         status="running",

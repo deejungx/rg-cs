@@ -1,0 +1,2 @@
+https://www.remoterocketship.com/publicjobs/company/telus-digital/jobs/staff-ai-engineer-brazil-remote/
+https://www.remoterocketship.com/publicjobs/company/lvivity/jobs/frontend-developer-next-js-react-ukraine-remote/

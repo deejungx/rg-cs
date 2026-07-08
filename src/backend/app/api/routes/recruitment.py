@@ -12,7 +12,16 @@ from pydantic import BaseModel
 
 from app.api.deps import workspace_service
 from app.services.orchestration_progress_service import orchestration_progress_service
-from src.ai.pipelines.job_opening_flow import render_job_opening_markdown, run_job_opening_flow
+from src.ai.events.progress_listener import ensure_progress_listener
+from src.ai.events.runtime_context import current_run_id, current_stage
+from src.ai.pipelines.job_opening_flow import (
+    InvalidJobDescriptionError,
+    extract_structured_job_opening,
+    load_job_opening_source,
+    render_job_opening_markdown,
+    review_job_missing_fields,
+    validate_job_description,
+)
 from src.shared.schemas import (
     AnnotatedJobOpening,
     JobOpeningExtractionRequest,
@@ -67,21 +76,28 @@ def _job_markdown(payload: dict[str, Any]) -> str:
 def _markdown_with_status(markdown: str, status: str) -> str:
     status_line = f"**Status:** {status}"
     if re.search(r"^\*\*Status:\*\* .+$", markdown, flags=re.MULTILINE):
-        return re.sub(r"^\*\*Status:\*\* .+$", status_line, markdown, count=1, flags=re.MULTILINE)
+        return re.sub(
+            r"^\*\*Status:\*\* .+$", status_line, markdown, count=1, flags=re.MULTILINE
+        )
     match = re.match(r"^(# .+\n)", markdown)
     if match:
         return f"{match.group(1)}\n{status_line}\n{markdown[match.end():]}"
     return f"{status_line}\n\n{markdown}"
 
 
-def _persist_job(job: AnnotatedJobOpening, markdown: str) -> JobOpeningExtractionResponse:
+def _persist_job(
+    job: AnnotatedJobOpening, markdown: str
+) -> JobOpeningExtractionResponse:
     directory = _job_root() / job.id
     job_payload = job.model_dump(mode="json")
     job_payload["status"] = "active"
     job_payload["json_path"] = f"job_openings/{job.id}/job_opening.json"
     job_payload["markdown_path"] = f"job_openings/{job.id}/job_opening.md"
     workspace_service.write_json(directory / "job_opening.json", job_payload)
-    workspace_service.write_text(directory / "job_opening.md", _markdown_with_status(markdown, job_payload["status"]))
+    workspace_service.write_text(
+        directory / "job_opening.md",
+        _markdown_with_status(markdown, job_payload["status"]),
+    )
     return JobOpeningExtractionResponse(
         job_opening=job,
         markdown=markdown,
@@ -90,7 +106,9 @@ def _persist_job(job: AnnotatedJobOpening, markdown: str) -> JobOpeningExtractio
     )
 
 
-def _publish_job_step(run_id: str, event_type: str, label: str, message: str = "") -> None:
+def _publish_job_step(
+    run_id: str, event_type: str, label: str, message: str = ""
+) -> None:
     orchestration_progress_service.publish_event(
         run_id,
         {
@@ -103,53 +121,155 @@ def _publish_job_step(run_id: str, event_type: str, label: str, message: str = "
     )
 
 
-def _run_job_opening_extraction(run_id: str, request: JobOpeningExtractionRequest) -> None:
+def _run_job_opening_extraction(
+    run_id: str, request: JobOpeningExtractionRequest
+) -> None:
+    ensure_progress_listener()
+    run_token = current_run_id.set(run_id)
     try:
         orchestration_progress_service.set_status(run_id, status="running")
-        _publish_job_step(run_id, "run_started", "job_opening_curation", "Job opening curation started.")
+        _publish_job_step(
+            run_id,
+            "run_started",
+            "job_opening_curation",
+            "Job opening curation started.",
+        )
 
         if request.source_type == "website":
-            _publish_job_step(run_id, "step_started", "fetch_source_content", "Fetching website content.")
+            _publish_job_step(
+                run_id,
+                "step_started",
+                "fetch_source_content",
+                "Fetching website content.",
+            )
         else:
-            _publish_job_step(run_id, "step_started", "read_pasted_text", "Reading pasted job description.")
+            _publish_job_step(
+                run_id,
+                "step_started",
+                "read_pasted_text",
+                "Reading pasted job description.",
+            )
 
-        if request.source_type == "website":
-            _publish_job_step(run_id, "step_completed", "fetch_source_content", "Website content fetched and cleaned.")
-        else:
-            _publish_job_step(run_id, "step_completed", "read_pasted_text", "Pasted job description received.")
-
-        _publish_job_step(run_id, "step_started", "extract_structured_job", "Extracting structured job opening.")
-        job, markdown = run_job_opening_flow(
+        source_text, source_url = load_job_opening_source(
             source_type=request.source_type,
             content=request.content,
         )
-        _publish_job_step(run_id, "step_completed", "extract_structured_job", "Structured job opening extracted.")
-
-        _publish_job_step(run_id, "step_started", "quality_guardrail", "Checking extraction quality.")
-        if job.metadata.missing_fields or job.metadata.quality_warnings:
-            message = "Quality metadata generated with missing fields or warnings."
+        if request.source_type == "website":
+            _publish_job_step(
+                run_id,
+                "step_completed",
+                "fetch_source_content",
+                "Website content fetched and cleaned.",
+            )
         else:
-            message = "Quality guardrail passed with no warnings."
-        _publish_job_step(run_id, "step_completed", "quality_guardrail", message)
+            _publish_job_step(
+                run_id,
+                "step_completed",
+                "read_pasted_text",
+                "Pasted job description received.",
+            )
 
-        _publish_job_step(run_id, "step_started", "persist_job_opening", "Persisting job artifacts.")
+        _publish_job_step(
+            run_id,
+            "step_started",
+            "validate_job_description",
+            "Validating job description.",
+        )
+        stage_token = current_stage.set("validate_job_description")
+        try:
+            validation = validate_job_description(source_text)
+        except Exception as exc:
+            _publish_job_step(
+                run_id, "step_failed", "validate_job_description", str(exc)
+            )
+            raise
+        finally:
+            current_stage.reset(stage_token)
+        if not validation.is_job_description:
+            reason = (
+                validation.reason or "The source did not validate as a job description."
+            )
+            _publish_job_step(run_id, "step_failed", "validate_job_description", reason)
+            raise InvalidJobDescriptionError(
+                f"Uploaded source does not appear to be a job description. {reason}"
+            )
+        _publish_job_step(
+            run_id,
+            "step_completed",
+            "validate_job_description",
+            validation.reason or "Job description validated.",
+        )
+
+        _publish_job_step(
+            run_id,
+            "step_started",
+            "extract_structured_job",
+            "Extracting structured job opening.",
+        )
+        stage_token = current_stage.set("extract_structured_job")
+        try:
+            job = extract_structured_job_opening(
+                source_type=request.source_type,
+                source_text=source_text,
+                source_url=source_url,
+            )
+        finally:
+            current_stage.reset(stage_token)
+        _publish_job_step(
+            run_id,
+            "step_completed",
+            "extract_structured_job",
+            "Structured job opening extracted.",
+        )
+
+        _publish_job_step(
+            run_id, "step_started", "review_missing_fields", "Reviewing missing fields."
+        )
+        stage_token = current_stage.set("review_missing_fields")
+        try:
+            job = review_job_missing_fields(job)
+        finally:
+            current_stage.reset(stage_token)
+        _publish_job_step(
+            run_id,
+            "step_completed",
+            "review_missing_fields",
+            "Missing fields reviewed.",
+        )
+
+        _publish_job_step(
+            run_id, "step_started", "persist_job_opening", "Persisting job artifacts."
+        )
+        markdown = render_job_opening_markdown(job)
         response = _persist_job(job, markdown)
-        _publish_job_step(run_id, "step_completed", "persist_job_opening", "Job artifacts persisted.")
+        _publish_job_step(
+            run_id, "step_completed", "persist_job_opening", "Job artifacts persisted."
+        )
 
+        result_payload = response.model_dump(mode="json")
+        _publish_job_step(
+            run_id,
+            "run_completed",
+            "job_opening_curation",
+            "Job opening curation completed.",
+        )
         orchestration_progress_service.set_status(
             run_id,
             status="completed",
-            result=response.model_dump(mode="json"),
+            result=result_payload,
         )
-        _publish_job_step(run_id, "run_completed", "job_opening_curation", "Job opening curation completed.")
     except Exception as exc:
-        orchestration_progress_service.set_status(run_id, status="failed", error=str(exc))
+        orchestration_progress_service.set_status(
+            run_id, status="failed", error=str(exc)
+        )
         _publish_job_step(
             run_id,
             "run_failed",
             "job_opening_curation",
             "Job opening curation failed.",
         )
+    finally:
+        current_run_id.reset(run_token)
 
 
 def _read_job(path: Path) -> dict[str, Any] | None:
@@ -195,43 +315,84 @@ def _run_totals(run_id: str) -> tuple[int, float]:
         return tokens, cost
     for event in events:
         usage = event.get("usage") or {}
-        tokens += int(usage.get("total_tokens") or event.get("total_tokens_consumed") or 0)
+        tokens += int(
+            usage.get("total_tokens") or event.get("total_tokens_consumed") or 0
+        )
         if isinstance(event.get("estimated_cost_usd"), int | float):
             cost += float(event["estimated_cost_usd"])
     return tokens, cost
 
 
 def _recent_runs() -> list[dict[str, Any]]:
-    try:
-        keys = orchestration_progress_service.client.keys("orchestration:run:*")
-    except Exception:
+    runs_dir = workspace_service.workspace_dir / "runs"
+    if not runs_dir.exists():
         return []
 
     runs: list[dict[str, Any]] = []
-    for key in keys:
-        if key.endswith(":events") or key.endswith(":seq") or key.endswith(":channel"):
+
+    for run_dir in runs_dir.iterdir():
+        if not run_dir.is_dir():
             continue
-        run_id = key.rsplit(":", 1)[-1]
+
+        run_id = run_dir.name
+        logs_path = run_dir / "logs.jsonl"
+
+        if not logs_path.exists():
+            continue
+
+        # Extract metadata from logs.jsonl
+        candidate_id = ""
+        filename = ""
+        total_tokens = 0
+        total_cost = 0.0
+
         try:
-            run = orchestration_progress_service.get_run(run_id)
+            with logs_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                        if not candidate_id and event.get("candidate_id"):
+                            candidate_id = event["candidate_id"]
+                        if not filename and event.get("filename"):
+                            filename = event["filename"]
+
+                        # Accumulate tokens
+                        if isinstance(event.get("total_tokens_consumed"), int):
+                            total_tokens += event["total_tokens_consumed"]
+                        elif isinstance(event.get("token_usage"), dict):
+                            total_tokens += int(
+                                event["token_usage"].get("total_tokens", 0)
+                            )
+
+                        # Accumulate cost
+                        if isinstance(event.get("estimated_cost_usd"), (int, float)):
+                            total_cost += float(event["estimated_cost_usd"])
+                        elif isinstance(event.get("total_cost_usd"), (int, float)):
+                            total_cost += float(event["total_cost_usd"])
+                    except json.JSONDecodeError:
+                        continue
         except Exception:
-            run = None
-        if not run:
             continue
-        tokens, cost = _run_totals(run_id)
+
+        # Use file timestamps for created_at and updated_at
+        stat_info = logs_path.stat()
+        created_at = datetime.fromtimestamp(stat_info.st_ctime, tz=UTC).isoformat()
+        updated_at = datetime.fromtimestamp(stat_info.st_mtime, tz=UTC).isoformat()
+
         runs.append(
             {
-                "run_id": run["run_id"],
-                "candidate_id": run.get("candidate_id", ""),
-                "filename": run.get("filename", ""),
-                "status": run.get("status", "unknown"),
-                "created_at": run.get("created_at", ""),
-                "updated_at": run.get("updated_at", ""),
-                "tokens": tokens,
-                "estimated_cost_usd": cost,
+                "run_id": run_id,
+                "candidate_id": candidate_id,
+                "filename": filename,
+                "status": "completed",
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "tokens": total_tokens,
+                "estimated_cost_usd": total_cost,
             }
         )
-    return sorted(runs, key=lambda item: str(item.get("created_at", "")), reverse=True)
+
+    return sorted(runs, key=lambda item: str(item.get("updated_at", "")), reverse=True)
 
 
 def _count_dirs(path: Path) -> int:
@@ -267,7 +428,8 @@ def _candidate_summary(path: Path) -> dict[str, Any] | None:
         "primary_designation": professional.get("primary_designation") or "",
         "primary_industry": professional.get("primary_industry") or "",
         "location": personal.get("address") or "",
-        "education_qualification": education_skills.get("education_qualification") or "",
+        "education_qualification": education_skills.get("education_qualification")
+        or "",
         "skills": skills[:8],
         "skill_count": len(skills),
         "experience_count": len(work),
@@ -305,14 +467,16 @@ def dashboard() -> dict[str, Any]:
     jobs = _list_jobs()
     return {
         "workflow_count": 3,
-        "agent_count": 5,
+        "agent_count": 7,
         "runs_total": len(runs),
         "runs_successful": successful,
         "runs_failed": failed,
         "tokens_consumed": total_tokens,
         "candidates_total": candidates,
         "job_openings_total": len(jobs),
-        "active_job_openings": sum(1 for job in jobs if job.get("status", "active") == "active"),
+        "active_job_openings": sum(
+            1 for job in jobs if job.get("status", "active") == "active"
+        ),
         "recent_runs": runs[:20],
         "workflows": [
             {"id": "resume-extraction", "name": "Resume Extraction", "status": "ready"},
@@ -359,15 +523,23 @@ def create_job_opening(request: JobOpeningRequest) -> dict[str, Any]:
 
 
 @router.patch("/job-openings/{job_id}/status")
-def update_job_opening_status(job_id: str, request: JobOpeningStatusRequest) -> dict[str, Any]:
+def update_job_opening_status(
+    job_id: str, request: JobOpeningStatusRequest
+) -> dict[str, Any]:
     payload = _get_job(job_id)
     payload["status"] = request.status
     payload["updated_at"] = _utc_now()
     directory = _job_directory(job_id)
     workspace_service.write_json(directory / "job_opening.json", payload)
     markdown_path = directory / "job_opening.md"
-    markdown = markdown_path.read_text(encoding="utf-8") if markdown_path.exists() else _job_markdown(payload)
-    workspace_service.write_text(markdown_path, _markdown_with_status(markdown, request.status))
+    markdown = (
+        markdown_path.read_text(encoding="utf-8")
+        if markdown_path.exists()
+        else _job_markdown(payload)
+    )
+    workspace_service.write_text(
+        markdown_path, _markdown_with_status(markdown, request.status)
+    )
     return payload
 
 
@@ -383,7 +555,9 @@ def extract_job_opening(
         filename=request.source_type,
     )
     orchestration_progress_service.set_status(run_id, status="queued")
-    _publish_job_step(run_id, "run_queued", "job_opening_curation", "Job opening curation queued.")
+    _publish_job_step(
+        run_id, "run_queued", "job_opening_curation", "Job opening curation queued."
+    )
     background_tasks.add_task(_run_job_opening_extraction, run_id, request)
     return {"run_id": run_id}
 
@@ -392,14 +566,18 @@ def extract_job_opening(
 def get_job_opening_run(run_id: str) -> dict[str, object]:
     payload = orchestration_progress_service.get_run(run_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail=f"Unknown job opening run id: {run_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Unknown job opening run id: {run_id}"
+        )
     return payload
 
 
 @router.get("/job-openings/runs/{run_id}/events")
 def stream_job_opening_events(run_id: str) -> StreamingResponse:
     if orchestration_progress_service.get_run(run_id) is None:
-        raise HTTPException(status_code=404, detail=f"Unknown job opening run id: {run_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Unknown job opening run id: {run_id}"
+        )
 
     def event_stream():
         terminal = {"completed", "failed"}
@@ -415,7 +593,9 @@ def stream_job_opening_events(run_id: str) -> StreamingResponse:
         pubsub = orchestration_progress_service.subscribe(run_id)
         try:
             while True:
-                message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
                 if message and message["type"] == "message":
                     event = json.loads(message["data"])
                     sequence = int(event["sequence"])

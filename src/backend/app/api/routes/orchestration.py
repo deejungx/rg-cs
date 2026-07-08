@@ -233,14 +233,38 @@ def stream_candidate_analysis_events(run_id: str) -> StreamingResponse:
 
     def event_stream():
         terminal = {"completed", "failed"}
+        terminal_event_types = {"run_completed", "run_failed"}
         emitted_sequences: set[int] = set()
+        terminal_event_emitted = False
+
+        def terminal_event_from_status(run_payload: dict[str, object]) -> dict[str, object]:
+            status = str(run_payload.get("status") or "")
+            return {
+                "sequence": (max(emitted_sequences) if emitted_sequences else 0) + 1,
+                "timestamp": run_payload.get("updated_at") or "",
+                "run_id": run_id,
+                "type": "run_completed" if status == "completed" else "run_failed",
+                "label": "candidate_analysis",
+                "stage": "candidate_analysis",
+                "error": run_payload.get("error") or "",
+                "message": (
+                    "Run completed."
+                    if status == "completed"
+                    else str(run_payload.get("error") or "Run failed.")
+                ),
+            }
 
         for event in orchestration_progress_service.get_events(run_id):
             emitted_sequences.add(event["sequence"])
+            if event.get("type") in terminal_event_types:
+                terminal_event_emitted = True
             yield f"id: {event['sequence']}\ndata: {json.dumps(event)}\n\n"
 
         run_payload = orchestration_progress_service.get_run(run_id)
         if run_payload and run_payload["status"] in terminal:
+            if not terminal_event_emitted:
+                event = terminal_event_from_status(run_payload)
+                yield f"id: {event['sequence']}\ndata: {json.dumps(event)}\n\n"
             return
 
         pubsub = orchestration_progress_service.subscribe(run_id)
@@ -256,14 +280,19 @@ def stream_candidate_analysis_events(run_id: str) -> StreamingResponse:
                     if sequence in emitted_sequences:
                         continue
                     emitted_sequences.add(sequence)
+                    if event.get("type") in terminal_event_types:
+                        terminal_event_emitted = True
                     yield f"id: {sequence}\ndata: {json.dumps(event)}\n\n"
-                    run_payload = orchestration_progress_service.get_run(run_id)
-                    if run_payload and run_payload["status"] in terminal:
+                    if terminal_event_emitted:
                         break
                 else:
                     yield ": keepalive\n\n"
                     run_payload = orchestration_progress_service.get_run(run_id)
                     if run_payload and run_payload["status"] in terminal:
+                        if not terminal_event_emitted:
+                            event = terminal_event_from_status(run_payload)
+                            emitted_sequences.add(int(event["sequence"]))
+                            yield f"id: {event['sequence']}\ndata: {json.dumps(event)}\n\n"
                         break
                     time.sleep(0.25)
         finally:

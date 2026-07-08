@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.services.orchestration_progress_service import orchestration_progress_service
-from src.ai.events.runtime_context import current_run_id, current_stage
+from src.ai.events.runtime_context import current_run_id
 from src.ai.providers import get_model_provider
 from src.ai.tracing.run_logger import append_log
 from src.shared import CrewAIRunLimits
@@ -18,6 +18,7 @@ from src.shared.schemas import (
     CandidateSnapshot,
     CompanyLine,
     CriteriaGrid,
+    CriteriaGridOutput,
     CriteriaRow,
     DesignationRoleSection,
     ExperienceJobRequirement,
@@ -25,7 +26,6 @@ from src.shared.schemas import (
     Header,
     Insight,
     JDMatchOverview,
-    LocationAssessment,
     MatchAnalystOutput,
     MatchBadge,
     MatchMeta,
@@ -44,10 +44,6 @@ from src.shared.schemas import (
     SkillsSection,
 )
 
-_LOCATION_CLUSTERS = {
-    "kathmandu": {"kathmandu", "katmandu", "ktm", "lalitpur", "patan", "bhaktapur"},
-    "pokhara": {"pokhara", "lakeside", "chipledhunga"},
-}
 _SKILL_ALIASES = {
     "react.js": "react",
     "reactjs": "react",
@@ -93,14 +89,6 @@ def _normalize_token(value: str) -> str:
     return _SKILL_ALIASES.get(token, token)
 
 
-def _normalize_location(value: str) -> str:
-    token = _normalize_token(value)
-    for primary, cluster in _LOCATION_CLUSTERS.items():
-        if token in cluster:
-            return primary.title()
-    return token.title()
-
-
 def _months_from_date(date_value) -> int | None:
     if date_value is None:
         return None
@@ -111,7 +99,11 @@ def _months_from_date(date_value) -> int | None:
 def _experience_months(cv_data) -> int:
     total = 0
     current = _months_from_date(
-        type("Now", (), {"year": datetime.now(UTC).year, "month": datetime.now(UTC).month})()
+        type(
+            "Now",
+            (),
+            {"year": datetime.now(UTC).year, "month": datetime.now(UTC).month},
+        )()
     )
     for work in cv_data.works:
         start = _months_from_date(work.start)
@@ -131,7 +123,11 @@ def _extract_experience_bounds(vacancy_data) -> tuple[int | None, int | None]:
         return vacancy_data.experience_level.min, vacancy_data.experience_level.max
 
     raw = str(vacancy_data.experience_required or "").lower()
-    digits = [int(token) for token in raw.replace("+", " ").replace("-", " ").split() if token.isdigit()]
+    digits = [
+        int(token)
+        for token in raw.replace("+", " ").replace("-", " ").split()
+        if token.isdigit()
+    ]
     if not digits:
         return None, None
     if len(digits) == 1:
@@ -140,7 +136,9 @@ def _extract_experience_bounds(vacancy_data) -> tuple[int | None, int | None]:
 
 
 def _skill_overlap(cv_data, vacancy_data) -> tuple[list[str], list[str]]:
-    candidate_tokens = {_normalize_token(skill): skill for skill in cv_data.skills if skill}
+    candidate_tokens = {
+        _normalize_token(skill): skill for skill in cv_data.skills if skill
+    }
     work_tokens = {
         _normalize_token(tool): tool
         for work in cv_data.works
@@ -165,58 +163,9 @@ def _title_overlap(cv_data, vacancy_data) -> tuple[list[str], list[str], list[st
     vacancy_titles = [vacancy_data.title] if vacancy_data.title else []
     vacancy_tokens = {_normalize_token(title) for title in vacancy_titles}
     overlap = [
-        title
-        for title in candidate_titles
-        if _normalize_token(title) in vacancy_tokens
+        title for title in candidate_titles if _normalize_token(title) in vacancy_tokens
     ]
     return candidate_titles, vacancy_titles, overlap
-
-
-def _location_assessment(cv_data, vacancy_data) -> LocationAssessment:
-    candidate_location = cv_data.address or ""
-    vacancy_location = vacancy_data.location or ""
-    normalized_candidate = _normalize_location(candidate_location) if candidate_location else ""
-    normalized_vacancy = _normalize_location(vacancy_location) if vacancy_location else ""
-    exact_match = bool(normalized_candidate and normalized_candidate == normalized_vacancy)
-    nearby_match = exact_match
-    if normalized_candidate and normalized_vacancy:
-        nearby_match = exact_match or (
-            normalized_candidate in {city.title() for city in _LOCATION_CLUSTERS.get(normalized_vacancy.lower(), set())}
-        )
-
-    work_approach = vacancy_data.work_approach or []
-    candidate_has_transport = bool(cv_data.driving_license or cv_data.two_wheeler)
-    if not vacancy_location:
-        status = "missing"
-        note = "Location not specified"
-    elif any("remote" in approach.lower() for approach in work_approach):
-        status = "match" if candidate_location else "partial"
-        note = "Remote role reduces location risk"
-    elif nearby_match and candidate_has_transport:
-        status = "match"
-        note = "Commutable location fit"
-    elif nearby_match:
-        status = "partial"
-        note = "Nearby but transport unclear"
-    elif candidate_location:
-        status = "mismatch"
-        note = "Different work location"
-    else:
-        status = "missing"
-        note = "Candidate location missing"
-
-    return LocationAssessment(
-        candidate_location=candidate_location,
-        vacancy_location=vacancy_location,
-        normalized_candidate_location=normalized_candidate,
-        normalized_vacancy_location=normalized_vacancy,
-        work_approach=work_approach,
-        nearby_match=nearby_match,
-        exact_match=exact_match,
-        candidate_has_transport=candidate_has_transport,
-        status=status,
-        status_note=note,
-    )
 
 
 def _salary_assessment(cv_data, vacancy_data) -> SalaryAssessment:
@@ -237,7 +186,12 @@ def _salary_assessment(cv_data, vacancy_data) -> SalaryAssessment:
     vacancy_floor = vacancy.min if vacancy.min is not None else vacancy.max
     vacancy_ceiling = vacancy.max if vacancy.max is not None else vacancy.min
 
-    if candidate_floor is None or candidate_ceiling is None or vacancy_floor is None or vacancy_ceiling is None:
+    if (
+        candidate_floor is None
+        or candidate_ceiling is None
+        or vacancy_floor is None
+        or vacancy_ceiling is None
+    ):
         status = "partial"
         note = "Salary data incomplete"
     elif candidate_floor <= vacancy_ceiling and candidate_ceiling >= vacancy_floor:
@@ -263,7 +217,9 @@ def _salary_assessment(cv_data, vacancy_data) -> SalaryAssessment:
 def _build_context(request: CVMatchingRequest) -> MatchingContext:
     candidate_experience_months = _experience_months(request.cv_data)
     min_years, max_years = _extract_experience_bounds(request.vacancy_data)
-    matched_skills, missing_skills = _skill_overlap(request.cv_data, request.vacancy_data)
+    matched_skills, missing_skills = _skill_overlap(
+        request.cv_data, request.vacancy_data
+    )
     candidate_titles, vacancy_titles, title_overlap = _title_overlap(
         request.cv_data, request.vacancy_data
     )
@@ -281,10 +237,12 @@ def _build_context(request: CVMatchingRequest) -> MatchingContext:
         vacancy_titles=vacancy_titles,
         title_overlap=title_overlap,
         candidate_industries=[
-            value for value in [request.cv_data.industry, *request.cv_data.industries] if value
+            value
+            for value in [request.cv_data.industry, *request.cv_data.industries]
+            if value
         ],
-        vacancy_industry=request.vacancy_data.company_industry or request.vacancy_data.category,
-        location_assessment=_location_assessment(request.cv_data, request.vacancy_data),
+        vacancy_industry=request.vacancy_data.company_industry
+        or request.vacancy_data.category,
         salary_assessment=_salary_assessment(request.cv_data, request.vacancy_data),
     )
 
@@ -347,7 +305,11 @@ def _fallback_analyst_output(context: MatchingContext) -> MatchAnalystOutput:
     elif exp_gap >= -1:
         exp_percent, exp_label, exp_note = 48, "gap", "Slight experience gap"
     else:
-        exp_percent, exp_label, exp_note = 22, "major_gap", "Experience below requirement"
+        exp_percent, exp_label, exp_note = (
+            22,
+            "major_gap",
+            "Experience below requirement",
+        )
 
     if facts.title_overlap:
         title_percent, title_label, title_note = 84, "match", "Relevant titles present"
@@ -376,7 +338,8 @@ def _fallback_analyst_output(context: MatchingContext) -> MatchAnalystOutput:
         100,
         max(
             0,
-            overlap_percent + (10 if len(context.cv_data.skills) > len(facts.matched_skills) else 0),
+            overlap_percent
+            + (10 if len(context.cv_data.skills) > len(facts.matched_skills) else 0),
         ),
     )
     domain_percent = min(100, max(20, round((exp_percent + skills_percent) / 2)))
@@ -385,7 +348,9 @@ def _fallback_analyst_output(context: MatchingContext) -> MatchAnalystOutput:
     other_items = []
     if context.vacancy_data.education_level:
         candidate_education = context.cv_data.education_qualification or "Not specified"
-        education_status = "match" if candidate_education != "Not specified" else "missing"
+        education_status = (
+            "match" if candidate_education != "Not specified" else "missing"
+        )
         other_items.append(
             {
                 "key": "education",
@@ -393,21 +358,6 @@ def _fallback_analyst_output(context: MatchingContext) -> MatchAnalystOutput:
                 "candidate_value": candidate_education,
                 "status": education_status,
                 "severity": "good" if education_status == "match" else "missing",
-            }
-        )
-    if facts.location_assessment.vacancy_location:
-        other_items.append(
-            {
-                "key": "location",
-                "jd_preference": facts.location_assessment.vacancy_location,
-                "candidate_value": facts.location_assessment.candidate_location or "Not specified",
-                "status": facts.location_assessment.status,
-                "severity": {
-                    "match": "good",
-                    "partial": "neutral",
-                    "mismatch": "bad",
-                    "missing": "missing",
-                }[facts.location_assessment.status],
             }
         )
     if context.vacancy_data.offered_salary:
@@ -548,7 +498,9 @@ def _fallback_summary_output(
     if analyst_output.designation_role.match.percent < 60:
         gaps.append("Title alignment is not yet strong enough for a clean match.")
     if not gaps:
-        gaps.append("Interview should validate depth behind the listed accomplishments.")
+        gaps.append(
+            "Interview should validate depth behind the listed accomplishments."
+        )
 
     best_fit_roles = [
         role
@@ -587,7 +539,9 @@ def _fallback_summary_output(
     )
 
 
-def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> list[CriteriaRow]:
+def _criteria_rows(
+    context: MatchingContext, analyst: MatchAnalystOutput
+) -> list[CriteriaRow]:
     education_status = "missing"
     education_note = "Education not specified"
     if context.vacancy_data.education_level:
@@ -604,13 +558,23 @@ def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> lis
         "mismatch": "mismatch",
         "missing": "missing",
     }[salary_status]
-    location_status = context.facts.location_assessment.status
-    location_label = {
-        "match": "match",
-        "partial": "partial",
-        "mismatch": "mismatch",
-        "missing": "missing",
-    }[location_status]
+    location_label = "missing"
+    location_note = "Location not specified"
+    if context.vacancy_data.location:
+        if context.cv_data.address:
+            location_label = (
+                "match"
+                if _normalize_token(context.cv_data.address)
+                == _normalize_token(context.vacancy_data.location)
+                else "partial"
+            )
+            location_note = (
+                "Location matches"
+                if location_label == "match"
+                else "Different nearby location"
+            )
+        else:
+            location_note = "Candidate location missing"
 
     return [
         CriteriaRow(
@@ -624,7 +588,11 @@ def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> lis
         CriteriaRow(
             criterion="Experience Level",
             jd_requirement=(
-                context.vacancy_data.experience_level.level
+                (
+                    context.vacancy_data.experience_level.level
+                    if context.vacancy_data.experience_level
+                    else ""
+                )
                 or (
                     f"{context.facts.vacancy_min_experience_years}+ years"
                     if context.facts.vacancy_min_experience_years is not None
@@ -638,8 +606,12 @@ def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> lis
         ),
         CriteriaRow(
             criterion="Domain Knowledge",
-            jd_requirement=context.facts.vacancy_industry or context.vacancy_data.category or None,
-            cv_summary=", ".join(context.facts.candidate_industries[:2]) or context.cv_data.designation or None,
+            jd_requirement=context.facts.vacancy_industry
+            or context.vacancy_data.category
+            or None,
+            cv_summary=", ".join(context.facts.candidate_industries[:2])
+            or context.cv_data.designation
+            or None,
             label=analyst.domain_knowledge.match.label,
             status_note=analyst.domain_knowledge.status_note,
             score=analyst.domain_knowledge.match.percent,
@@ -658,18 +630,18 @@ def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> lis
                 "match"
                 if context.facts.vacancy_industry
                 and any(
-                    _normalize_token(industry) == _normalize_token(context.facts.vacancy_industry)
+                    _normalize_token(industry)
+                    == _normalize_token(context.facts.vacancy_industry)
                     for industry in context.facts.candidate_industries
                 )
-                else "partial"
-                if context.facts.candidate_industries
-                else "missing"
+                else "partial" if context.facts.candidate_industries else "missing"
             ),
             status_note=(
                 "Industry overlap found"
                 if context.facts.vacancy_industry
                 and any(
-                    _normalize_token(industry) == _normalize_token(context.facts.vacancy_industry)
+                    _normalize_token(industry)
+                    == _normalize_token(context.facts.vacancy_industry)
                     for industry in context.facts.candidate_industries
                 )
                 else "Industry fit unclear"
@@ -678,12 +650,11 @@ def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> lis
                 85
                 if context.facts.vacancy_industry
                 and any(
-                    _normalize_token(industry) == _normalize_token(context.facts.vacancy_industry)
+                    _normalize_token(industry)
+                    == _normalize_token(context.facts.vacancy_industry)
                     for industry in context.facts.candidate_industries
                 )
-                else 55
-                if context.facts.candidate_industries
-                else None
+                else 55 if context.facts.candidate_industries else None
             ),
         ),
         CriteriaRow(
@@ -694,19 +665,35 @@ def _criteria_rows(context: MatchingContext, analyst: MatchAnalystOutput) -> lis
         ),
         CriteriaRow(
             criterion="Skills Overlap",
-            jd_requirement=f"{context.facts.vacancy_skill_count} required skills" if context.facts.vacancy_skill_count else None,
-            cv_summary=f"{context.facts.matched_skill_count} explicitly matched" if context.facts.vacancy_skill_count else None,
+            jd_requirement=(
+                f"{context.facts.vacancy_skill_count} required skills"
+                if context.facts.vacancy_skill_count
+                else None
+            ),
+            cv_summary=(
+                f"{context.facts.matched_skill_count} explicitly matched"
+                if context.facts.vacancy_skill_count
+                else None
+            ),
             label=analyst.skills.match.label,
             status_note=analyst.skills.coverage.notes,
             score=analyst.skills.coverage.overlap_percent,
         ),
         CriteriaRow(
             criterion="Location",
-            jd_requirement=context.vacancy_data.location or None,
+            jd_requirement=", ".join(
+                value
+                for value in [
+                    context.vacancy_data.location,
+                    ", ".join(context.vacancy_data.work_approach),
+                ]
+                if value
+            )
+            or None,
             cv_summary=context.cv_data.address or None,
             label=location_label,
-            status_note=context.facts.location_assessment.status_note,
-            score=None,
+            status_note=location_note,
+            score=85 if location_label == "match" else 60 if location_label == "partial" else None,
         ),
         CriteriaRow(
             criterion="Salary Expectation",
@@ -721,8 +708,13 @@ def _assemble_response(
     context: MatchingContext,
     analyst: MatchAnalystOutput,
     summary: MatchSummaryOutput,
+    criteria_grid_output: CriteriaGridOutput | None = None,
 ) -> CVMatchingResponse:
-    criteria_rows = _criteria_rows(context, analyst)
+    criteria_grid = (
+        CriteriaGrid.model_validate(criteria_grid_output.model_dump(mode="json"))
+        if criteria_grid_output and criteria_grid_output.rows
+        else CriteriaGrid(rows=_criteria_rows(context, analyst))
+    )
 
     return CVMatchingResponse(
         meta=MatchMeta(
@@ -751,7 +743,9 @@ def _assemble_response(
                 company_line=CompanyLine(
                     company_name=context.vacancy_data.company_name,
                     location=context.vacancy_data.location,
-                    employment_type_display=", ".join(context.vacancy_data.employment_type),
+                    employment_type_display=", ".join(
+                        context.vacancy_data.employment_type
+                    ),
                     work_approach_display=", ".join(context.vacancy_data.work_approach),
                 ),
                 overall_match=MatchBadge(
@@ -759,30 +753,41 @@ def _assemble_response(
                     label=(
                         "match"
                         if summary.overall_fit_level in {"excellent", "good"}
-                        else "partial"
-                        if summary.overall_fit_level == "partial"
-                        else "mismatch"
+                        else (
+                            "partial"
+                            if summary.overall_fit_level == "partial"
+                            else "mismatch"
+                        )
                     ),
                     severity=(
                         "good"
                         if summary.overall_fit_level in {"excellent", "good"}
-                        else "warning"
-                        if summary.overall_fit_level == "partial"
-                        else "bad"
+                        else (
+                            "warning"
+                            if summary.overall_fit_level == "partial"
+                            else "bad"
+                        )
                     ),
                 ),
-                pills=[Pill(text=item.text, severity=item.severity) for item in summary.pills],
+                pills=[
+                    Pill(text=item.text, severity=item.severity)
+                    for item in summary.pills
+                ],
             ),
             scorecards=[
                 Scorecard(
                     key="experience",
                     title="Experience Match",
-                    match=MatchBadge.model_validate(analyst.experience.match.model_dump()),
+                    match=MatchBadge.model_validate(
+                        analyst.experience.match.model_dump()
+                    ),
                 ),
                 Scorecard(
                     key="designation_role",
                     title="Designation Match",
-                    match=MatchBadge.model_validate(analyst.designation_role.match.model_dump()),
+                    match=MatchBadge.model_validate(
+                        analyst.designation_role.match.model_dump()
+                    ),
                 ),
                 Scorecard(
                     key="skills",
@@ -792,14 +797,21 @@ def _assemble_response(
             ],
             sections=Sections(
                 experience=ExperienceSection(
-                    match=MatchBadge.model_validate(analyst.experience.match.model_dump()),
-                    job_requirement=ExperienceJobRequirement(
-                        headline="Experience Requirement",
-                        experience_level=(
-                            context.vacancy_data.experience_level.level
-                            or (
-                                f"{context.facts.vacancy_min_experience_years}+ years"
-                                if context.facts.vacancy_min_experience_years is not None
+                    match=MatchBadge.model_validate(
+                        analyst.experience.match.model_dump()
+                    ),
+                        job_requirement=ExperienceJobRequirement(
+                            headline="Experience Requirement",
+                            experience_level=(
+                                (
+                                    context.vacancy_data.experience_level.level
+                                    if context.vacancy_data.experience_level
+                                    else ""
+                                )
+                                or (
+                                    f"{context.facts.vacancy_min_experience_years}+ years"
+                                    if context.facts.vacancy_min_experience_years
+                                is not None
                                 else ""
                             )
                         ),
@@ -808,10 +820,14 @@ def _assemble_response(
                         headline=analyst.experience.status_note,
                         detail=analyst.experience.insight.text,
                     ),
-                    insight=Insight.model_validate(analyst.experience.insight.model_dump()),
+                    insight=Insight.model_validate(
+                        analyst.experience.insight.model_dump()
+                    ),
                 ),
                 designation_role=DesignationRoleSection(
-                    match=MatchBadge.model_validate(analyst.designation_role.match.model_dump()),
+                    match=MatchBadge.model_validate(
+                        analyst.designation_role.match.model_dump()
+                    ),
                     job_title_options=context.facts.vacancy_titles,
                     candidate_titles=context.facts.candidate_titles,
                     insight=Insight.model_validate(
@@ -828,20 +844,22 @@ def _assemble_response(
                         analyst.skills.coverage.model_dump()
                     ),
                 ),
-                other_factors=OtherFactorsSection(
-                    items=[
-                        OtherFactorItem(
-                            key=item.key,
-                            jd_preference=item.jd_preference,
-                            candidate_value=item.candidate_value,
-                            label=item.status,
-                            severity=item.severity,
-                        )
-                        for item in analyst.other_factors.items
-                    ]
-                )
-                if analyst.other_factors.items
-                else None,
+                other_factors=(
+                    OtherFactorsSection(
+                        items=[
+                            OtherFactorItem(
+                                key=item.key,
+                                jd_preference=item.jd_preference,
+                                candidate_value=item.candidate_value,
+                                label=item.status,
+                                severity=item.severity,
+                            )
+                            for item in analyst.other_factors.items
+                        ]
+                    )
+                    if analyst.other_factors.items
+                    else None
+                ),
                 overall_ai_analysis=OverallAIAnalysis(
                     headline=summary.headline,
                     overall_summary=summary.overall_summary,
@@ -854,7 +872,7 @@ def _assemble_response(
                     ideal_next_step=summary.ideal_next_step,
                 ),
             ),
-            criteria_grid=CriteriaGrid(rows=criteria_rows),
+            criteria_grid=criteria_grid,
         ),
     )
 
@@ -867,9 +885,7 @@ def run_cv_matching_flow(
 ) -> dict[str, object]:
     run_limits = CrewAIRunLimits(
         max_cost_usd=(
-            settings.crewai_run_max_cost_usd
-            if max_cost_usd is None
-            else max_cost_usd
+            settings.crewai_run_max_cost_usd if max_cost_usd is None else max_cost_usd
         ),
         max_latency_seconds=(
             settings.crewai_run_max_latency_seconds
@@ -891,41 +907,42 @@ def run_cv_matching_flow(
     token_usage: dict[str, int] = {}
     estimated_cost_usd = 0.0
     elapsed_seconds = 0.0
+    criteria_grid_output: CriteriaGridOutput | None = None
     provider = get_model_provider()
     if provider.uses_live_llm:
         from src.ai.crews.cv_matching_crew import CvMatchingCrew
 
         crew = CvMatchingCrew(run_limits=run_limits)
-        _publish_progress(
-            "step_started",
-            "run_match_analysis",
-            "Running AI match analysis.",
-        )
-        stage_token = current_stage.set("run_match_analysis")
-        try:
-            analyst_output, summary_output = crew.run_match_analysis(context)
-        finally:
-            current_stage.reset(stage_token)
-        _publish_progress(
-            "step_completed",
-            "run_match_analysis",
-            "AI match analysis completed.",
+        analyst_output, summary_output, criteria_grid_output = crew.run_match_analysis(
+            context
         )
         token_usage = crew.token_usage
         estimated_cost_usd = crew.estimated_cost_usd
         elapsed_seconds = crew.elapsed_seconds
     else:
+        deterministic_steps = [
+            ("analyze_experience_designation", "Analyzing experience and designation."),
+            ("analyze_skills", "Analyzing skills coverage."),
+            ("analyze_other_factors", "Analyzing other match factors."),
+            ("analyze_criteria_grid", "Building criteria grid."),
+        ]
+        for label, message in deterministic_steps:
+            _publish_progress("step_started", label, message)
+        analyst_output = _fallback_analyst_output(context)
+        for label, _message in deterministic_steps:
+            _publish_progress(
+                "step_completed", label, "Deterministic analysis completed."
+            )
         _publish_progress(
             "step_started",
-            "run_match_analysis",
-            "Running deterministic match analysis.",
+            "analyze_overall_fit",
+            "Synthesizing overall fit.",
         )
-        analyst_output = _fallback_analyst_output(context)
         summary_output = _fallback_summary_output(context, analyst_output)
         _publish_progress(
             "step_completed",
-            "run_match_analysis",
-            "Deterministic match analysis completed.",
+            "analyze_overall_fit",
+            "Overall fit synthesized.",
         )
 
     _publish_progress(
@@ -933,16 +950,20 @@ def run_cv_matching_flow(
         "assemble_match_results",
         "Assembling recruiter-facing match result.",
     )
-    response = _assemble_response(context, analyst_output, summary_output)
+    response = _assemble_response(
+        context, analyst_output, summary_output, criteria_grid_output
+    )
     _publish_progress(
         "step_completed",
         "assemble_match_results",
         "Match result assembled.",
     )
+    log_run_id = current_run_id.get() or response.meta.analysis_id
     append_log(
-        run_id=context.cv_data.id,
+        run_id=log_run_id,
         event={
             "stage": "cv_matching",
+            "run_id": log_run_id,
             "candidate_id": context.cv_data.id,
             "vacancy_id": context.vacancy_data.id,
             "token_usage": token_usage,

@@ -2,17 +2,20 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
-from crewai import Process, Task
+from crewai import Process, Task, Agent, Crew, LLM
 from app.core.config import settings
 from pydantic import BaseModel, ValidationError
 from src.ai.formatters.cv_markdown import render_cv_markdown
-from src.ai.integrations.deepeval_crewai import Agent, Crew, LLM, initialize_deepeval
 from src.ai.providers import get_model_provider
 from src.ai.prompts.cv_extraction import CV_MARKDOWN_PROMPT
 from src.ai.runtime.crewai_run_limiter import CrewAIRunLimiter
 from src.ai.tracing.phoenix import initialize_phoenix
 from src.shared import CrewAIRunLimits, OpenAITokenPricing, get_openai_token_pricing
-from src.shared.schemas import ComprehensiveCvProfile, ResumeValidationResult
+from src.shared.schemas import (
+    ComprehensiveCvProfile,
+    CvMissingFieldsReview,
+    ResumeValidationResult,
+)
 
 _TOKEN_USAGE_FIELDS = (
     "total_tokens",
@@ -44,6 +47,23 @@ _REQUIRED_MARKDOWN_HEADINGS = (
     "## Training and Certifications",
     "## Extraction Notes",
 )
+CV_MISSING_FIELDS_REVIEW_PROMPT = """Review the extracted CV profile and identify profile fields that are missing or materially incomplete.
+
+Rules:
+- Return only canonical field paths from the ComprehensiveCvProfile schema.
+- Include personal_info.firstname and personal_info.lastname when both name parts are missing.
+- Include personal_info.email, personal_info.phone, and personal_info.address when absent.
+- Include professional_experience.primary_designation when absent.
+- Include professional_experience.work when no work entries were extracted.
+- Include education_skills.education_qualification and education_skills.education when education is missing.
+- Include education_skills.skills when no skills were extracted.
+- Include professional_experience.projects or education_skills.training only when the source clearly mentions those sections but extraction missed them.
+- Do not include fields that are present with usable values.
+- Do not invent fields outside the schema.
+
+Extracted CV profile:
+{profile_json}
+"""
 _T = TypeVar("_T", bound=BaseModel)
 
 
@@ -147,6 +167,33 @@ def _validate_profile_quality(profile: ComprehensiveCvProfile) -> list[str]:
     return issues
 
 
+def _missing_profile_fields(profile: ComprehensiveCvProfile) -> list[str]:
+    missing: list[str] = []
+    personal = profile.personal_info
+    professional = profile.professional_experience
+    education_skills = profile.education_skills
+
+    if not personal.firstname and not personal.lastname:
+        missing.extend(["personal_info.firstname", "personal_info.lastname"])
+    if not personal.email:
+        missing.append("personal_info.email")
+    if not personal.phone:
+        missing.append("personal_info.phone")
+    if not personal.address:
+        missing.append("personal_info.address")
+    if not professional.primary_designation:
+        missing.append("professional_experience.primary_designation")
+    if not professional.work:
+        missing.append("professional_experience.work")
+    if not education_skills.education_qualification:
+        missing.append("education_skills.education_qualification")
+    if not education_skills.education:
+        missing.append("education_skills.education")
+    if not education_skills.skills:
+        missing.append("education_skills.skills")
+    return missing
+
+
 def _validate_resume_validation_guardrail(task_output: object) -> tuple[bool, Any]:
     try:
         result = _load_task_output_model(task_output, ResumeValidationResult)
@@ -215,14 +262,14 @@ def _validate_curated_markdown(
     )
     for fragment in forbidden_fragments:
         if fragment in stripped:
-            issues.append(f"Remove forbidden content from the curated markdown: {fragment}")
+            issues.append(
+                f"Remove forbidden content from the curated markdown: {fragment}"
+            )
 
     return issues
 
 
-def _build_markdown_guardrail(
-    *, candidate_id: str, source_file: str
-):
+def _build_markdown_guardrail(*, candidate_id: str, source_file: str):
     def _guardrail(task_output: object) -> tuple[bool, Any]:
         markdown = getattr(task_output, "raw", None)
         if not isinstance(markdown, str) or not markdown.strip():
@@ -284,8 +331,6 @@ def _build_run_pricing() -> OpenAITokenPricing | None:
 
 class CvExtractionCrew:
     def __init__(self, *, run_limits: CrewAIRunLimits | None = None) -> None:
-        # Instrumentation must be registered before any Agent or Crew is created.
-        initialize_deepeval()
         initialize_phoenix()
         self.llm = _build_llm()
         self._token_usage = {field: 0 for field in _TOKEN_USAGE_FIELDS}
@@ -434,6 +479,59 @@ class CvExtractionCrew:
         return task.output.pydantic or ComprehensiveCvProfile(
             extraction_notes=["CrewAI extraction did not return structured output."]
         )
+
+    def review_missing_fields(
+        self, profile: ComprehensiveCvProfile
+    ) -> ComprehensiveCvProfile:
+        if self.llm is None:
+            missing_fields = _missing_profile_fields(profile)
+        else:
+            reviewer = Agent(
+                role="CV Completeness Reviewer",
+                goal="Identify missing or incomplete fields in an extracted candidate profile.",
+                backstory=(
+                    "You inspect structured CV profiles for missing recruiter-critical "
+                    "fields without changing or inventing candidate facts."
+                ),
+                llm=self.llm,
+                max_iter=4,
+                max_execution_time=self._bounded_execution_time(45),
+                allow_delegation=False,
+                verbose=False,
+            )
+            task = Task(
+                description=CV_MISSING_FIELDS_REVIEW_PROMPT.format(
+                    profile_json=json.dumps(profile.model_dump(mode="json"), indent=2)
+                ),
+                expected_output="A CvMissingFieldsReview with canonical missing profile field paths only.",
+                agent=reviewer,
+                output_pydantic=CvMissingFieldsReview,
+            )
+            crew = Crew(
+                agents=[reviewer],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=False,
+            )
+            self._kickoff_with_limits(crew, operation="cv missing fields review")
+            try:
+                missing_fields = _load_task_output_model(
+                    task.output, CvMissingFieldsReview
+                ).missing_fields
+            except (ValidationError, ValueError):
+                missing_fields = _missing_profile_fields(profile)
+
+        missing_fields = sorted({field for field in missing_fields if field})
+        profile.extraction_notes = [
+            note
+            for note in profile.extraction_notes
+            if not note.startswith("Missing fields:")
+        ]
+        if missing_fields:
+            profile.extraction_notes.append(
+                f"Missing fields: {', '.join(missing_fields)}."
+            )
+        return profile
 
     def curate_profile_markdown(
         self,

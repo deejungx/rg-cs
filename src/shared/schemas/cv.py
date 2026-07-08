@@ -281,6 +281,13 @@ class ResumeValidationResult(CvBaseModel):
     )
 
 
+class CvMissingFieldsReview(CvBaseModel):
+    missing_fields: list[str] = Field(
+        default_factory=list,
+        description="Canonical CV profile field paths that are missing or materially incomplete.",
+    )
+
+
 class DocumentParseResult(CvBaseModel):
     text: str = ""
     parser: str = ""

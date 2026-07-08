@@ -14,6 +14,7 @@ const extractionSteps = [
   { id: "parse_document", label: "Parse document" },
   { id: "validate_document", label: "Validate resume" },
   { id: "extract_structured_profile", label: "Extract structured JSON" },
+  { id: "review_missing_fields", label: "Review missing fields" },
   { id: "curate_structured_markdown", label: "Curate Markdown" },
   { id: "persist_outputs", label: "Persist artifacts" },
 ];
@@ -22,30 +23,41 @@ const matchingSteps = [
   { id: "parse_document", label: "Parse document" },
   { id: "validate_document", label: "Validate resume" },
   { id: "extract_structured_profile", label: "Extract structured JSON" },
+  { id: "review_missing_fields", label: "Review missing fields" },
   { id: "curate_structured_markdown", label: "Curate Markdown" },
   { id: "persist_outputs", label: "Persist candidate artifacts" },
   { id: "build_matching_context", label: "Build matching context" },
-  { id: "run_match_analysis", label: "Run match analysis" },
+  { id: "analyze_experience_designation", label: "Experience and designation analysis" },
+  { id: "analyze_skills", label: "Skill match analysis" },
+  { id: "analyze_other_factors", label: "Other factor analysis" },
+  { id: "analyze_criteria_grid", label: "Criteria grid" },
+  { id: "analyze_overall_fit", label: "Overall analysis" },
   { id: "assemble_match_results", label: "Assemble results" },
 ];
 
 const storedCandidateMatchingSteps = [
   { id: "build_matching_context", label: "Build matching context" },
-  { id: "run_match_analysis", label: "Run match analysis" },
+  { id: "analyze_experience_designation", label: "Experience and designation analysis" },
+  { id: "analyze_skills", label: "Skill match analysis" },
+  { id: "analyze_other_factors", label: "Other factor analysis" },
+  { id: "analyze_criteria_grid", label: "Criteria grid" },
+  { id: "analyze_overall_fit", label: "Overall analysis" },
   { id: "assemble_match_results", label: "Assemble results" },
 ];
 
 const jobOpeningTextSteps = [
   { id: "read_pasted_text", label: "Read pasted text" },
+  { id: "validate_job_description", label: "Validate job description" },
   { id: "extract_structured_job", label: "Extract structured job" },
-  { id: "quality_guardrail", label: "Quality guardrail" },
+  { id: "review_missing_fields", label: "Review missing fields" },
   { id: "persist_job_opening", label: "Persist artifacts" },
 ];
 
 const jobOpeningWebsiteSteps = [
   { id: "fetch_source_content", label: "Fetch and clean website" },
+  { id: "validate_job_description", label: "Validate job description" },
   { id: "extract_structured_job", label: "Extract structured job" },
-  { id: "quality_guardrail", label: "Quality guardrail" },
+  { id: "review_missing_fields", label: "Review missing fields" },
   { id: "persist_job_opening", label: "Persist artifacts" },
 ];
 
@@ -223,7 +235,7 @@ function Dashboard({ dashboard, refreshDashboard }) {
       </section>
 
       <section className="metric-grid">
-        <MetricCard label="Active runs" value={formatNumber(dashboard?.runs_active)} detail="" />|
+        <MetricCard label="Active runs" value={formatNumber(dashboard?.runs_active)} detail="" />
         <MetricCard label="Success runs" value={formatNumber(dashboard?.runs_total)} detail="" />
         <MetricCard label="Failed runs" value={formatNumber(dashboard?.runs_failed)} detail="" tone="red" />
         <MetricCard label="Tokens consumed" value={formatNumber(dashboard?.tokens_consumed)} detail="" tone="blue" />
@@ -295,21 +307,32 @@ function getWorkflowStepState(stepId, events, isComplete) {
 }
 
 function getWorkflowStepUsage(stepId, events) {
-  const llmEvents = events.filter(
+  const completedEvents = events.filter(
     (event) =>
       event.stage === stepId &&
-      (event.type === "llm_call_started" || event.type === "llm_call_completed"),
+      event.type === "llm_call_completed" &&
+      event.usage,
   );
-  if (!llmEvents.length) {
+  if (!completedEvents.length) {
     return null;
   }
-  const latest = llmEvents[llmEvents.length - 1];
-  const completed = [...llmEvents].reverse().find((event) => event.type === "llm_call_completed");
-  const usage = completed?.usage || latest?.usage || {};
+  const modelNames = [...new Set(completedEvents.map((event) => event.model).filter(Boolean))];
+  const usage = completedEvents.reduce(
+    (totals, event) => {
+      const eventUsage = event.usage || {};
+      return {
+        prompt_tokens: totals.prompt_tokens + Number(eventUsage.prompt_tokens || 0),
+        completion_tokens: totals.completion_tokens + Number(eventUsage.completion_tokens || 0),
+        total_tokens: totals.total_tokens + Number(eventUsage.total_tokens || 0),
+      };
+    },
+    { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  );
   return {
-    model: latest.model || completed?.model || "model pending",
+    model: modelNames.join(", ") || "model unavailable",
     inputTokens: usage.prompt_tokens,
-    outputTokens: completed?.usage?.completion_tokens,
+    outputTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens || usage.prompt_tokens + usage.completion_tokens,
   };
 }
 
@@ -328,13 +351,79 @@ function getWorkflowStepLatency(stepId, events) {
   return formatLatency(endTime - startTime);
 }
 
-function WorkflowStepper({ steps, events, isComplete }) {
+function getWorkflowStepGuardrail(stepId, events) {
+  const guardrailEvents = events.filter(
+    (event) =>
+      event.stage === stepId &&
+      (event.type === "guardrail_started" || event.type === "guardrail_completed"),
+  );
+  if (!guardrailEvents.length) {
+    return null;
+  }
+  const latest = guardrailEvents[guardrailEvents.length - 1];
+  const latestCompleted = [...guardrailEvents]
+    .reverse()
+    .find((event) => event.type === "guardrail_completed");
+  if (latest.type === "guardrail_started" && latestCompleted?.retry_count !== latest.retry_count) {
+    return {
+      state: "checking",
+      label: latest.label || "Guardrail",
+      message: "Guardrail checking",
+    };
+  }
+  const completed = latest.type === "guardrail_completed" ? latest : latestCompleted;
+  if (!completed) {
+    return null;
+  }
+  return {
+    state: completed.success ? "passed" : "failed",
+    label: completed.label || "Guardrail",
+    message: completed.success ? "Guardrail passed" : completed.error || completed.result || "Guardrail failed",
+  };
+}
+
+function getWorkflowTotals(events, isComplete) {
+  if (!isComplete || !events.length) {
+    return null;
+  }
+  const started =
+    events.find((event) => event.type === "run_started") ||
+    events.find((event) => event.type === "run_queued") ||
+    events[0];
+  const terminal =
+    [...events].reverse().find((event) => event.type === "run_completed" || event.type === "run_failed") ||
+    events[events.length - 1];
+  const startedAt = started?.timestamp ? new Date(started.timestamp).getTime() : NaN;
+  const endedAt = terminal?.timestamp ? new Date(terminal.timestamp).getTime() : NaN;
+  const totalTokens = events
+    .filter((event) => event.type === "llm_call_completed" && event.usage)
+    .reduce((sum, event) => {
+      const usage = event.usage || {};
+      return sum + Number(usage.total_tokens || Number(usage.prompt_tokens || 0) + Number(usage.completion_tokens || 0));
+    }, 0);
+  return {
+    latency: Number.isFinite(startedAt) && Number.isFinite(endedAt) ? formatLatency(endedAt - startedAt) : "",
+    totalTokens,
+  };
+}
+
+function WorkflowStepper({ steps, events, isComplete, isTerminal = isComplete }) {
+  const totals = getWorkflowTotals(events, isTerminal);
   return (
     <div className="stepper">
       {steps.map((step) => {
         const state = getWorkflowStepState(step.id, events, isComplete);
         const usage = getWorkflowStepUsage(step.id, events);
         const latency = getWorkflowStepLatency(step.id, events);
+        const guardrail = getWorkflowStepGuardrail(step.id, events);
+        const usageParts = usage
+          ? [
+              latency,
+              usage.model,
+              usage.inputTokens !== undefined ? `input ${formatNumber(usage.inputTokens)}` : "",
+              usage.outputTokens !== undefined ? `output ${formatNumber(usage.outputTokens)}` : "",
+            ].filter(Boolean)
+          : [];
         return (
           <div className={`step-item ${state}`} key={step.id}>
             <span className="step-marker">
@@ -343,24 +432,294 @@ function WorkflowStepper({ steps, events, isComplete }) {
             <span className="step-copy">
               <span>{step.label}</span>
               {usage ? (
-                <span className="step-usage">
-                  {usage.model}
-                  {latency ? ` · ${latency}` : ""}
-                  {usage.inputTokens !== undefined ? ` · input ${formatNumber(usage.inputTokens)}` : ""}
-                  {usage.outputTokens !== undefined ? ` · output ${formatNumber(usage.outputTokens)}` : ""}
-                </span>
+                <span className="step-usage">{usageParts.join(" · ")}</span>
               ) : latency ? (
                 <span className="step-usage">{latency}</span>
+              ) : null}
+              {guardrail ? (
+                <span className={`guardrail-status ${guardrail.state}`}>
+                  <span className="guardrail-icon">
+                    {guardrail.state === "passed" ? "✓" : guardrail.state === "failed" ? "×" : "…"}
+                  </span>
+                  <span>{guardrail.message}</span>
+                </span>
               ) : null}
             </span>
           </div>
         );
       })}
+      {totals ? (
+        <div className="workflow-total">
+          <span>Total time {totals.latency || "not available"}</span>
+          <span>Total tokens {formatNumber(totals.totalTokens)}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function CandidatesTable({ candidates }) {
+function matchToneClass(value) {
+  if (value === "good" || value === "match" || value === "excellent") {
+    return "good";
+  }
+  if (value === "bad" || value === "mismatch" || value === "gap" || value === "major_gap" || value === "weak" || value === "not_recommended") {
+    return "bad";
+  }
+  return "warning";
+}
+
+function MatchBadge({ match }) {
+  if (!match) {
+    return null;
+  }
+  return (
+    <span className={`match-badge ${matchToneClass(match.severity || match.label)}`}>
+      <strong>{match.percent ?? "N/A"}%</strong>
+      <span>{match.label || "match"}</span>
+    </span>
+  );
+}
+
+function InsightList({ title, items, tone = "neutral" }) {
+  const visibleItems = (items || []).filter(Boolean);
+  if (!visibleItems.length) {
+    return null;
+  }
+  return (
+    <div className={`insight-list ${tone}`}>
+      <h4>{title}</h4>
+      <ul>
+        {visibleItems.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SkillTags({ title, items, tone }) {
+  const visibleItems = (items || []).filter(Boolean);
+  if (!visibleItems.length) {
+    return null;
+  }
+  return (
+    <div className="skill-tag-group">
+      <h4>{title}</h4>
+      <div className="tag-row">
+        {visibleItems.map((item) => (
+          <span className={`skill-tag ${tone}`} key={item}>
+            {item}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MatchResultPanel({ overview, runId }) {
+  if (!overview) {
+    return (
+      <p className="muted result-placeholder">
+        Select a candidate or upload a resume, then choose an opening to populate the analysis.
+      </p>
+    );
+  }
+
+  const sections = overview.sections || {};
+  const overall = sections.overall_ai_analysis || {};
+  const header = overview.header || {};
+  const company = header.company_line || {};
+  const skills = sections.skills || {};
+  const criteriaRows = overview.criteria_grid?.rows || [];
+  const otherFactors = sections.other_factors?.items || [];
+
+  return (
+    <div className="match-result">
+      <section className="match-hero">
+        <div>
+          <span className="eyebrow">{company.company_name || "Job match"}</span>
+          <h3>{overall.headline || header.jd_title}</h3>
+          <p>{overall.overall_summary}</p>
+          <div className="match-meta">
+            {header.jd_title ? <span>{header.jd_title}</span> : null}
+            {company.location ? <span>{company.location}</span> : null}
+            {company.employment_type_display ? <span>{company.employment_type_display}</span> : null}
+            {company.work_approach_display ? <span>{company.work_approach_display}</span> : null}
+          </div>
+          {header.pills?.length ? (
+            <div className="tag-row">
+              {header.pills.map((pill) => (
+                <span className={`skill-tag ${matchToneClass(pill.severity)}`} key={pill.text}>
+                  {pill.text}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="overall-score-card">
+          <span>Overall match</span>
+          <strong>{header.overall_match?.percent ?? "N/A"}%</strong>
+          <em>{overall.overall_fit_level || header.overall_match?.label || "N/A"}</em>
+          <small>{runId ? `Run ${runId}` : ""}</small>
+        </div>
+      </section>
+
+      <section className="match-scorecards">
+        {(overview.scorecards || []).map((scorecard) => (
+          <article key={scorecard.key || scorecard.title}>
+            <span>{scorecard.title}</span>
+            <MatchBadge match={scorecard.match} />
+          </article>
+        ))}
+      </section>
+
+      <section className="match-section-grid">
+        <article>
+          <div className="section-title-row">
+            <h3>Experience</h3>
+            <MatchBadge match={sections.experience?.match} />
+          </div>
+          <p>{sections.experience?.candidate_profile?.detail || sections.experience?.insight?.text}</p>
+          <dl className="compact-dl">
+            <div>
+              <dt>Requirement</dt>
+              <dd>{sections.experience?.job_requirement?.experience_level || "Not specified"}</dd>
+            </div>
+            <div>
+              <dt>Confidence</dt>
+              <dd>{sections.experience?.insight?.confidence || "N/A"}</dd>
+            </div>
+          </dl>
+        </article>
+        <article>
+          <div className="section-title-row">
+            <h3>Designation</h3>
+            <MatchBadge match={sections.designation_role?.match} />
+          </div>
+          <p>{sections.designation_role?.insight?.text}</p>
+          <dl className="compact-dl">
+            <div>
+              <dt>Target titles</dt>
+              <dd>{(sections.designation_role?.job_title_options || []).join(", ") || "Not specified"}</dd>
+            </div>
+            <div>
+              <dt>Candidate titles</dt>
+              <dd>{(sections.designation_role?.candidate_titles || []).join(", ") || "Not specified"}</dd>
+            </div>
+          </dl>
+        </article>
+      </section>
+
+      <section className="match-section">
+        <div className="section-title-row">
+          <div>
+            <h3>Skills Coverage</h3>
+            <p>{skills.insight?.text}</p>
+          </div>
+          <MatchBadge match={skills.match} />
+        </div>
+        <div className="coverage-row">
+          <span>Required skill overlap</span>
+          <strong>{skills.coverage?.overlap_percent ?? "N/A"}%</strong>
+          <em>{skills.coverage?.insight}</em>
+        </div>
+        <div className="skill-grid">
+          <SkillTags title="Matched skills" items={skills.matched_skills} tone="good" />
+          <SkillTags title="Missing or weak" items={skills.missing_or_weak_skills} tone="bad" />
+          <SkillTags title="Bonus skills" items={skills.bonus_skills} tone="warning" />
+        </div>
+      </section>
+
+      <section className="match-section-grid">
+        <InsightList title="Key strengths" items={overall.key_strengths} tone="good" />
+        <InsightList title="Key gaps" items={overall.key_gaps} tone="bad" />
+        <InsightList title="Interview focus" items={overall.recommended_interview_focus} tone="warning" />
+        <InsightList title="Better fit roles" items={overall.best_fit_roles} tone="neutral" />
+      </section>
+
+      <section className="match-section">
+        <div className="section-title-row">
+          <div>
+            <h3>Recommendation</h3>
+            <p>{overall.ideal_next_step}</p>
+          </div>
+          <span className={`recommendation-pill ${matchToneClass(overall.overall_fit_level)}`}>
+            {overall.ai_recommendation || "Review"}
+          </span>
+        </div>
+      </section>
+
+      {otherFactors.length ? (
+        <section className="match-section">
+          <h3>Other Factors</h3>
+          <div className="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Factor</th>
+                  <th>JD Preference</th>
+                  <th>Candidate</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {otherFactors.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.key}</td>
+                    <td>{item.jd_preference}</td>
+                    <td>{item.candidate_value}</td>
+                    <td>
+                      <span className={`status-pill ${statusClass(item.severity === "bad" ? "failed" : item.severity === "good" ? "completed" : "running")}`}>
+                        {item.label}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {criteriaRows.length ? (
+        <section className="match-section">
+          <h3>Criteria Grid</h3>
+          <div className="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Criterion</th>
+                  <th>Requirement</th>
+                  <th>Candidate evidence</th>
+                  <th>Status</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {criteriaRows.map((row) => (
+                  <tr key={row.criterion}>
+                    <td>
+                      <strong>{row.criterion}</strong>
+                      <span className="table-subtext">{row.status_note}</span>
+                    </td>
+                    <td>{row.jd_requirement || "N/A"}</td>
+                    <td>{row.cv_summary || "N/A"}</td>
+                    <td>
+                      <span className={`criteria-status ${matchToneClass(row.label)}`}>{row.label}</span>
+                    </td>
+                    <td>{row.score ?? "N/A"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function CandidatesTable({ candidates, onViewDetails }) {
   return (
     <div className="panel table-panel">
       <div className="panel-heading">
@@ -378,6 +737,7 @@ function CandidatesTable({ candidates }) {
               <th>Location</th>
               <th>Skills</th>
               <th>Updated</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>
@@ -395,11 +755,16 @@ function CandidatesTable({ candidates }) {
                     {candidate.skill_count > 4 ? ` +${candidate.skill_count - 4}` : ""}
                   </td>
                   <td>{formatDate(candidate.updated_at)}</td>
+                  <td>
+                    <button className="secondary-button compact-button" type="button" onClick={() => onViewDetails(candidate)}>
+                      Details
+                    </button>
+                  </td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan="5">No candidate records have been curated yet.</td>
+                <td colSpan="6">No candidate records have been curated yet.</td>
               </tr>
             )}
           </tbody>
@@ -415,6 +780,8 @@ function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
   const [events, setEvents] = useState([]);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedCandidateDetails, setSelectedCandidateDetails] = useState(null);
+  const [isLoadingCandidateDetails, setIsLoadingCandidateDetails] = useState(false);
 
   useEffect(() => {
     if (!task?.task_id || ["SUCCESS", "FAILURE"].includes(task.state)) {
@@ -428,6 +795,8 @@ function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
           if (payload.state === "SUCCESS") {
             refreshCandidates();
             refreshDashboard();
+          } else if (payload.state === "FAILURE") {
+            setError(payload.error || "Uploaded document does not appear to be a resume.");
           }
         })
         .catch((err) => setError(err.message));
@@ -458,6 +827,12 @@ function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
         const eventPayload = JSON.parse(message.data);
         setEvents((current) => [...current, eventPayload]);
         if (eventPayload.type === "run_completed" || eventPayload.type === "run_failed") {
+          if (eventPayload.type === "run_failed") {
+            setTask((current) =>
+              current ? { ...current, state: "FAILURE", error: eventPayload.error || current.error } : current,
+            );
+            setError(eventPayload.error || "Uploaded document does not appear to be a resume.");
+          }
           source.close();
         }
       };
@@ -468,6 +843,28 @@ function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
       setError(err.message);
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function viewCandidateDetails(candidate) {
+    setError("");
+    setIsLoadingCandidateDetails(true);
+    try {
+      const jsonPath = candidate.structured_json_path || `candidates/${candidate.candidate_id}/resume_structured.json`;
+      const markdownPath = candidate.structured_markdown_path || `candidates/${candidate.candidate_id}/resume.md`;
+      const [jsonArtifact, markdownArtifact] = await Promise.all([
+        fetch(`${apiBase}/api/workspace/${encodeURI(jsonPath)}`).then(parseJson),
+        fetch(`${apiBase}/api/workspace/${encodeURI(markdownPath)}`).then(parseJson),
+      ]);
+      setSelectedCandidateDetails({
+        candidate,
+        structuredJson: jsonArtifact.content || "",
+        markdown: markdownArtifact.content || "",
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoadingCandidateDetails(false);
     }
   }
 
@@ -514,6 +911,7 @@ function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
           <WorkflowStepper
             events={events}
             isComplete={task?.state === "SUCCESS"}
+            isTerminal={task?.state === "SUCCESS" || task?.state === "FAILURE"}
             steps={extractionSteps}
           />
         </div>
@@ -542,7 +940,33 @@ function CandidatesPage({ candidates, refreshCandidates, refreshDashboard }) {
         </section>
       ) : null}
 
-      <CandidatesTable candidates={candidates} />
+      <CandidatesTable candidates={candidates} onViewDetails={viewCandidateDetails} />
+      {isLoadingCandidateDetails ? <p className="muted">Loading candidate details...</p> : null}
+      {selectedCandidateDetails ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setSelectedCandidateDetails(null)}>
+          <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="candidate-details-title" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-heading">
+              <div>
+                <h2 id="candidate-details-title">{selectedCandidateDetails.candidate.full_name}</h2>
+                <p>{selectedCandidateDetails.candidate.candidate_id}</p>
+              </div>
+              <button className="secondary-button compact-button" type="button" onClick={() => setSelectedCandidateDetails(null)}>
+                Close
+              </button>
+            </div>
+            <section className="split-grid">
+              <div>
+                <h3>Structured JSON</h3>
+                <pre className="code-block">{selectedCandidateDetails.structuredJson}</pre>
+              </div>
+              <div>
+                <h3>Curated Markdown</h3>
+                <pre className="code-block">{selectedCandidateDetails.markdown}</pre>
+              </div>
+            </section>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -588,27 +1012,62 @@ function JobOpeningsPage({ jobs, refreshJobs, refreshDashboard }) {
         }),
       }).then(parseJson);
       setRunInfo(payload);
+      let streamSettled = false;
+      const loadTerminalRun = async (attempt = 0) => {
+        const runPayload = await fetch(`${apiBase}/api/recruitment/job-openings/runs/${payload.run_id}`).then(parseJson);
+        if (runPayload.status === "completed") {
+          setExtractedJob(runPayload.result);
+          setContent("");
+          await Promise.all([refreshJobs(), refreshDashboard()]);
+          setIsSubmitting(false);
+          return true;
+        }
+        if (runPayload.status === "failed") {
+          setError(runPayload.error || "Job opening curation failed.");
+          setIsSubmitting(false);
+          return true;
+        }
+        if (attempt < 5) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+          return loadTerminalRun(attempt + 1);
+        }
+        return false;
+      };
       const source = new EventSource(`${apiBase}/api/recruitment/job-openings/runs/${payload.run_id}/events`);
       source.onmessage = async (message) => {
         const eventPayload = JSON.parse(message.data);
         setEvents((current) => [...current, eventPayload]);
         if (eventPayload.type === "run_completed" || eventPayload.type === "run_failed") {
+          streamSettled = true;
           source.close();
-          const runPayload = await fetch(`${apiBase}/api/recruitment/job-openings/runs/${payload.run_id}`).then(parseJson);
-          if (runPayload.status === "completed") {
-            setExtractedJob(runPayload.result);
-            setContent("");
-            await Promise.all([refreshJobs(), refreshDashboard()]);
-          } else {
-            setError(runPayload.error || "Job opening curation failed.");
+          try {
+            const resolved = await loadTerminalRun();
+            if (!resolved) {
+              setError("Job opening curation finished, but the final result was not available yet.");
+              setIsSubmitting(false);
+            }
+          } catch (err) {
+            setError(err.message);
+            setIsSubmitting(false);
           }
-          setIsSubmitting(false);
         }
       };
-      source.onerror = () => {
+      source.onerror = async () => {
+        if (streamSettled) {
+          return;
+        }
+        streamSettled = true;
         source.close();
-        setError("The curation progress stream disconnected before completion.");
-        setIsSubmitting(false);
+        try {
+          const resolved = await loadTerminalRun();
+          if (!resolved) {
+            setError("The curation progress stream disconnected before completion.");
+            setIsSubmitting(false);
+          }
+        } catch (err) {
+          setError(err.message);
+          setIsSubmitting(false);
+        }
       };
     } catch (err) {
       setError(err.message);
@@ -874,26 +1333,61 @@ function MatchingPage({ candidates, jobs, refreshDashboard }) {
 
   async function watchRun(data) {
     setRunInfo(data);
+    let streamSettled = false;
+    const loadTerminalRun = async (attempt = 0) => {
+      const runPayload = await fetch(`${apiBase}/api/orchestration/runs/${data.run_id}`).then(parseJson);
+      if (runPayload.status === "completed") {
+        setAnalysis(runPayload.result);
+        setIsSubmitting(false);
+        refreshDashboard();
+        return true;
+      }
+      if (runPayload.status === "failed") {
+        setError(runPayload.error || "The match analysis run failed.");
+        setIsSubmitting(false);
+        return true;
+      }
+      if (attempt < 5) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        return loadTerminalRun(attempt + 1);
+      }
+      return false;
+    };
     const source = new EventSource(`${apiBase}/api/orchestration/runs/${data.run_id}/events`);
     source.onmessage = async (message) => {
       const payload = JSON.parse(message.data);
       setEvents((current) => [...current, payload]);
       if (payload.type === "run_completed" || payload.type === "run_failed") {
+        streamSettled = true;
         source.close();
-        const runPayload = await fetch(`${apiBase}/api/orchestration/runs/${data.run_id}`).then(parseJson);
-        if (runPayload.status === "completed") {
-          setAnalysis(runPayload.result);
-        } else {
-          setError(runPayload.error || "The match analysis run failed.");
+        try {
+          const resolved = await loadTerminalRun();
+          if (!resolved) {
+            setError("Match analysis finished, but the final result was not available yet.");
+            setIsSubmitting(false);
+          }
+        } catch (err) {
+          setError(err.message);
+          setIsSubmitting(false);
         }
-        setIsSubmitting(false);
-        refreshDashboard();
       }
     };
-    source.onerror = () => {
+    source.onerror = async () => {
+      if (streamSettled) {
+        return;
+      }
+      streamSettled = true;
       source.close();
-      setError("The live progress stream disconnected before the run completed.");
-      setIsSubmitting(false);
+      try {
+        const resolved = await loadTerminalRun();
+        if (!resolved) {
+          setError("The match analysis progress stream disconnected before completion.");
+          setIsSubmitting(false);
+        }
+      } catch (err) {
+        setError(err.message);
+        setIsSubmitting(false);
+      }
     };
   }
 
@@ -1052,30 +1546,11 @@ function MatchingPage({ candidates, jobs, refreshDashboard }) {
         <div className="panel-heading">
           <div>
             <h2>Match Result</h2>
-            <p>{runInfo ? `Run ${runInfo.run_id}` : "Waiting for a run."}</p>
+            <p>{overview ? "Recruiter-facing fit analysis and evidence." : "Waiting for a run."}</p>
           </div>
-          {overview?.header?.overall_match ? (
-            <span className="score-badge">{overview.header.overall_match.percent}%</span>
-          ) : null}
+          {overview?.header?.overall_match ? <MatchBadge match={overview.header.overall_match} /> : null}
         </div>
-        {overview ? (
-          <div className="result-summary">
-            <h3>{overview.sections?.overall_ai_analysis?.headline || overview.header?.jd_title}</h3>
-            <p>{overview.sections?.overall_ai_analysis?.overall_summary}</p>
-            <div className="stat-list compact">
-              <div>
-                <span>Fit</span>
-                <strong>{overview.sections?.overall_ai_analysis?.overall_fit_level || "N/A"}</strong>
-              </div>
-              <div>
-                <span>Next step</span>
-                <strong>{overview.sections?.overall_ai_analysis?.ideal_next_step || "N/A"}</strong>
-              </div>
-            </div>
-          </div>
-          ) : (
-          <p className="muted result-placeholder">Select a candidate or upload a resume, then choose an opening to populate the analysis.</p>
-        )}
+        <MatchResultPanel overview={overview} runId={runInfo?.run_id} />
       </div>
     </section>
   );

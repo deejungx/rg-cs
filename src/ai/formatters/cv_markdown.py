@@ -59,7 +59,7 @@ def render_cv_markdown(
         "",
         f"# {title}",
         "",
-        "> Structured recruitment workspace record. Prefer the accompanying JSON for machine processing.",
+        "> Structured candidate record. Prefer the accompanying JSON for machine processing.",
         "",
         "## At a Glance",
         "",

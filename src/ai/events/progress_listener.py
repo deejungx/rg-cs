@@ -164,6 +164,7 @@ class ProgressListener(BaseEventListener):
                 retry_count=event.retry_count,
                 guardrail_type=event.guardrail_type,
                 success=event.success,
+                result=str(event.result) if event.result is not None else "",
                 error=event.error or "",
             )
 

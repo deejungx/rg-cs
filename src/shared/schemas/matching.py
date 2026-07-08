@@ -413,6 +413,25 @@ class OtherFactorsOutput(MatchingBaseModel):
     items: list[OtherFactorItemOutput] = Field(default_factory=list)
 
 
+class ExperienceAndDesignationAnalysis(MatchingBaseModel):
+    experience: ExperienceMatchOutput
+    designation_role: DesignationMatchOutput
+
+
+class CriteriaGridOutput(MatchingBaseModel):
+    legend: list[MatchLabel] = Field(
+        default_factory=lambda: [
+            "match",
+            "partial",
+            "gap",
+            "major_gap",
+            "mismatch",
+            "missing",
+        ]
+    )
+    rows: list[CriteriaRow] = Field(default_factory=list)
+
+
 class MatchAnalystOutput(MatchingBaseModel):
     experience: ExperienceMatchOutput
     designation_role: DesignationMatchOutput
@@ -451,8 +470,8 @@ class LocationAssessment(MatchingBaseModel):
     nearby_match: bool = False
     exact_match: bool = False
     candidate_has_transport: bool = False
-    status: Literal["match", "partial", "mismatch", "missing"]
-    status_note: str
+    status: Literal["match", "partial", "mismatch", "missing"] = "missing"
+    status_note: str = "Location not assessed"
 
 
 class SalaryAssessment(MatchingBaseModel):

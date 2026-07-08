@@ -157,6 +157,23 @@ class JobOpeningExtractionRequest(JobOpeningBaseModel):
     content: str = Field(description="Pasted job text or website URL.")
 
 
+class JobDescriptionValidationResult(JobOpeningBaseModel):
+    is_job_description: bool = Field(
+        description="Whether the source appears to be a hiring job description or vacancy posting."
+    )
+    reason: str = Field(
+        default="",
+        description="Short recruiter-facing reason for the validation decision.",
+    )
+
+
+class JobMissingFieldsReview(JobOpeningBaseModel):
+    missing_fields: list[str] = Field(
+        default_factory=list,
+        description="Canonical extracted job fields that are missing or materially incomplete.",
+    )
+
+
 class JobOpeningExtractionResponse(JobOpeningBaseModel):
     job_opening: AnnotatedJobOpening
     markdown: str

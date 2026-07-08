@@ -3,23 +3,42 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import TypeVar
 
 from crewai import Process, Task
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
-from src.ai.integrations.deepeval_crewai import Agent, Crew, LLM
+from app.services.orchestration_progress_service import orchestration_progress_service
+from crewai import Agent, Crew, LLM
+from src.ai.events.runtime_context import current_run_id, current_stage
 from src.ai.providers import get_model_provider
 from src.ai.prompts.cv_matching import (
-    MATCH_ANALYST_EXPECTED_OUTPUT,
-    MATCH_ANALYST_PROMPT,
-    MATCH_SUMMARY_EXPECTED_OUTPUT,
-    MATCH_SUMMARY_PROMPT,
+    CRITERIA_GRID_ANALYSIS_EXPECTED_OUTPUT,
+    CRITERIA_GRID_ANALYSIS_PROMPT,
+    EXP_DESIGNATION_ANALYSIS_EXPECTED_OUTPUT,
+    EXP_DESIGNATION_ANALYSIS_PROMPT,
+    OTHER_FACTORS_ANALYSIS_EXPECTED_OUTPUT,
+    OTHER_FACTORS_ANALYSIS_PROMPT,
+    OVERALL_ANALYSIS_EXPECTED_OUTPUT,
+    OVERALL_ANALYSIS_PROMPT,
+    SKILLS_ANALYSIS_EXPECTED_OUTPUT,
+    SKILLS_ANALYSIS_PROMPT,
 )
 from src.ai.runtime.crewai_run_limiter import CrewAIRunLimiter
 from src.shared import CrewAIRunLimits, OpenAITokenPricing, get_openai_token_pricing
-from src.shared.schemas import MatchAnalystOutput, MatchSummaryOutput, MatchingContext
+from src.shared.schemas import (
+    CriteriaGridOutput,
+    DomainKnowledgeOutput,
+    ExperienceAndDesignationAnalysis,
+    MatchAnalystOutput,
+    MatchSummaryOutput,
+    MatchingContext,
+    SkillsMatchOutput,
+    OtherFactorsOutput,
+)
 
 _TOKEN_USAGE_FIELDS = (
     "total_tokens",
@@ -99,6 +118,26 @@ def _severity_for_label(label: str) -> str:
     return "bad"
 
 
+def _publish_step(
+    run_id: str | None, event_type: str, label: str, message: str
+) -> None:
+    if not run_id:
+        return
+    try:
+        orchestration_progress_service.publish_event(
+            run_id,
+            {
+                "run_id": run_id,
+                "type": event_type,
+                "label": label,
+                "stage": label,
+                "message": message,
+            },
+        )
+    except Exception:
+        return
+
+
 class CvMatchingCrew:
     def __init__(self, *, run_limits: CrewAIRunLimits | None = None) -> None:
         self.llm = _build_llm()
@@ -107,6 +146,7 @@ class CvMatchingCrew:
             limits=run_limits,
             pricing=_build_run_pricing(),
         )
+        self._usage_lock = Lock()
 
     @property
     def token_usage(self) -> dict[str, int]:
@@ -141,8 +181,11 @@ class CvMatchingCrew:
     def _kickoff_with_limits(self, crew: Crew, *, operation: str) -> object:
         self._run_limiter.assert_can_start(operation=operation)
         crew_output = crew.kickoff()
-        self._record_token_usage(crew_output)
-        self._run_limiter.assert_within_limits(self._token_usage, operation=operation)
+        with self._usage_lock:
+            self._record_token_usage(crew_output)
+            self._run_limiter.assert_within_limits(
+                self._token_usage, operation=operation
+            )
         return crew_output
 
     def _fallback_analyst_output(self, context: MatchingContext) -> MatchAnalystOutput:
@@ -200,7 +243,9 @@ class CvMatchingCrew:
             max(
                 0,
                 overlap_percent
-                + (10 if len(context.cv_data.skills) > len(facts.matched_skills) else 0),
+                + (
+                    10 if len(context.cv_data.skills) > len(facts.matched_skills) else 0
+                ),
             ),
         )
 
@@ -221,9 +266,7 @@ class CvMatchingCrew:
                 context.cv_data.education_qualification or "Not specified"
             ).strip()
             education_status = (
-                "match"
-                if candidate_education != "Not specified"
-                else "missing"
+                "match" if candidate_education != "Not specified" else "missing"
             )
             other_items.append(
                 {
@@ -231,34 +274,12 @@ class CvMatchingCrew:
                     "jd_preference": education_level,
                     "candidate_value": candidate_education,
                     "status": education_status,
-                    "severity": (
-                        "good" if education_status == "match" else "missing"
-                    ),
+                    "severity": ("good" if education_status == "match" else "missing"),
                 }
             )
-        if facts.location_assessment.vacancy_location:
-            location_status = facts.location_assessment.status
-            other_items.append(
-                {
-                    "key": "location",
-                    "jd_preference": facts.location_assessment.vacancy_location,
-                    "candidate_value": facts.location_assessment.candidate_location
-                    or "Not specified",
-                    "status": location_status,
-                    "severity": {
-                        "match": "good",
-                        "partial": "neutral",
-                        "mismatch": "bad",
-                        "missing": "missing",
-                    }[location_status],
-                }
-            )
-        if (
-            context.vacancy_data.offered_salary
-            and (
-                context.vacancy_data.offered_salary.min is not None
-                or context.vacancy_data.offered_salary.max is not None
-            )
+        if context.vacancy_data.offered_salary and (
+            context.vacancy_data.offered_salary.min is not None
+            or context.vacancy_data.offered_salary.max is not None
         ):
             salary_status = facts.salary_assessment.status
             other_items.append(
@@ -290,7 +311,10 @@ class CvMatchingCrew:
             candidate_gender = context.cv_data.gender.strip() or "Not specified"
             if candidate_gender == "Not specified":
                 gender_status = "missing"
-            elif candidate_gender.lower() == context.vacancy_data.gender_preferred.lower():
+            elif (
+                candidate_gender.lower()
+                == context.vacancy_data.gender_preferred.lower()
+            ):
                 gender_status = "match"
             else:
                 gender_status = "mismatch"
@@ -420,7 +444,9 @@ class CvMatchingCrew:
         if not strengths:
             strengths.append("Candidate provides some evidence relevant to the role.")
         while len(strengths) < 3:
-            strengths.append("Work history offers at least partial role-adjacent evidence.")
+            strengths.append(
+                "Work history offers at least partial role-adjacent evidence."
+            )
 
         gaps = []
         if analyst_output.skills.missing_or_weak_skills:
@@ -432,7 +458,9 @@ class CvMatchingCrew:
         if analyst_output.designation_role.match.percent < 60:
             gaps.append("Title alignment is not yet strong enough for a clean match.")
         if not gaps:
-            gaps.append("Interview should validate depth behind the listed accomplishments.")
+            gaps.append(
+                "Interview should validate depth behind the listed accomplishments."
+            )
 
         best_fit_roles = [
             context.cv_data.designation or context.vacancy_data.title,
@@ -473,78 +501,281 @@ class CvMatchingCrew:
             ],
         )
 
+    def _task_agent(
+        self,
+        *,
+        role: str,
+        goal: str,
+        backstory: str,
+        max_execution_time: int,
+    ) -> Agent:
+        return Agent(
+            role=role,
+            goal=goal,
+            backstory=backstory,
+            llm=self.llm,
+            max_iter=8,
+            max_execution_time=self._bounded_execution_time(max_execution_time),
+            allow_delegation=False,
+            verbose=False,
+        )
+
+    def _run_structured_task(
+        self,
+        *,
+        stage: str,
+        operation: str,
+        agent: Agent,
+        description: str,
+        expected_output: str,
+        model_type: type[_T],
+        run_id: str | None,
+    ) -> _T:
+        run_token = current_run_id.set(run_id)
+        stage_token = current_stage.set(stage)
+        try:
+            _publish_step(run_id, "step_started", stage, f"Running {operation}.")
+            task = Task(
+                description=description,
+                expected_output=expected_output,
+                agent=agent,
+                output_pydantic=model_type,
+            )
+            crew = Crew(
+                agents=[agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=False,
+            )
+            self._kickoff_with_limits(crew, operation=operation)
+            output = _load_task_output_model(task.output, model_type)
+            _publish_step(run_id, "step_completed", stage, f"Completed {operation}.")
+            return output
+        except Exception as exc:
+            _publish_step(run_id, "step_failed", stage, str(exc))
+            raise
+        finally:
+            current_stage.reset(stage_token)
+            current_run_id.reset(run_token)
+
+    def _domain_from_branches(
+        self,
+        exp_des_analysis: ExperienceAndDesignationAnalysis,
+        skills_analysis: SkillsMatchOutput,
+    ) -> DomainKnowledgeOutput:
+        percent = round(
+            (exp_des_analysis.experience.match.percent + skills_analysis.match.percent)
+            / 2
+        )
+        if percent >= 80:
+            label = "match"
+        elif percent >= 50:
+            label = "partial"
+        elif percent >= 30:
+            label = "gap"
+        else:
+            label = "major_gap"
+        return DomainKnowledgeOutput(
+            match={
+                "percent": percent,
+                "label": label,
+                "severity": _severity_for_label(label),
+            },
+            insight={
+                "text": "Domain fit is inferred from role experience and skill evidence.",
+                "confidence": min(
+                    exp_des_analysis.experience.insight.confidence or 0.5,
+                    skills_analysis.insight.confidence or 0.5,
+                ),
+            },
+            status_note="Inferred from branches",
+        )
+
+    def _combine_analyst_output(
+        self,
+        exp_des_analysis: ExperienceAndDesignationAnalysis,
+        skills_analysis: SkillsMatchOutput,
+        other_factors_analysis: OtherFactorsOutput,
+    ) -> MatchAnalystOutput:
+        return MatchAnalystOutput(
+            experience=exp_des_analysis.experience,
+            designation_role=exp_des_analysis.designation_role,
+            domain_knowledge=self._domain_from_branches(
+                exp_des_analysis, skills_analysis
+            ),
+            skills=skills_analysis,
+            other_factors=other_factors_analysis,
+        )
+
     def run_match_analysis(
         self,
         context: MatchingContext,
-    ) -> tuple[MatchAnalystOutput, MatchSummaryOutput]:
+    ) -> tuple[MatchAnalystOutput, MatchSummaryOutput, CriteriaGridOutput]:
         if self.llm is None:
             analyst_output = self._fallback_analyst_output(context)
             summary_output = self._fallback_summary_output(context, analyst_output)
-            return analyst_output, summary_output
+            return analyst_output, summary_output, CriteriaGridOutput()
 
-        analyst = Agent(
-            role="Recruitment Match Analyst",
-            goal="Produce a precise structured evaluation of CV-to-vacancy fit.",
-            backstory=(
-                "You are an experienced talent evaluator. You reason conservatively, "
-                "prefer explicit evidence, and keep outputs short enough for recruiters to scan."
-            ),
-            llm=self.llm,
-            max_iter=8,
-            max_execution_time=self._bounded_execution_time(90),
-            allow_delegation=False,
-            verbose=False,
+        cv_json = json.dumps(context.cv_data.model_dump(mode="json"), indent=2)
+        vacancy_json = json.dumps(
+            context.vacancy_data.model_dump(mode="json"), indent=2
         )
-        summarizer = Agent(
-            role="Hiring Recommendation Synthesizer",
-            goal="Turn analyst findings into a decisive recruiter-facing recommendation.",
-            backstory=(
-                "You synthesize structured fit analysis into practical hiring guidance "
-                "without overstating certainty or inventing evidence."
-            ),
-            llm=self.llm,
-            max_iter=6,
-            max_execution_time=self._bounded_execution_time(75),
-            allow_delegation=False,
-            verbose=False,
-        )
+        run_id = current_run_id.get()
 
-        context_json = json.dumps(context.model_dump(mode="json"), indent=2)
-        analyst_task = Task(
-            description=MATCH_ANALYST_PROMPT.format(matching_context_json=context_json),
-            expected_output=MATCH_ANALYST_EXPECTED_OUTPUT,
-            agent=analyst,
-            output_pydantic=MatchAnalystOutput,
-        )
-        summary_task = Task(
-            description=(
-                MATCH_SUMMARY_PROMPT.format(
-                    matching_context_json=context_json,
-                    analyst_output_json="Use the analyst task output passed through context.",
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            exp_future = executor.submit(
+                self._run_structured_task,
+                stage="analyze_experience_designation",
+                operation="experience and designation analysis",
+                agent=self._task_agent(
+                    role="Experience and Designation Analyst",
+                    goal="Evaluate candidate experience depth and title alignment against the vacancy.",
+                    backstory="You are an expert HR assistant specializing in evaluating candidate fit for job vacancies.",
+                    max_execution_time=75,
+                ),
+                description=EXP_DESIGNATION_ANALYSIS_PROMPT.format(
+                    candidate_works_json=json.dumps(
+                        [
+                            work.model_dump(mode="json")
+                            for work in context.cv_data.works
+                        ],
+                        indent=2,
+                    ),
+                    candidate_designation=context.cv_data.designation,
+                    candidate_designations_json=json.dumps(
+                        context.cv_data.designations, indent=2
+                    ),
+                    vacancy_json=vacancy_json,
+                ),
+                expected_output=EXP_DESIGNATION_ANALYSIS_EXPECTED_OUTPUT,
+                model_type=ExperienceAndDesignationAnalysis,
+                run_id=run_id,
+            )
+            skills_future = executor.submit(
+                self._run_structured_task,
+                stage="analyze_skills",
+                operation="skills match analysis",
+                agent=self._task_agent(
+                    role="Skills Match Analyst",
+                    goal="Evaluate vacancy skill coverage using explicit candidate skill evidence.",
+                    backstory="You are an expert HR assistant specializing in evaluating candidate fit for job vacancies.",
+                    max_execution_time=75,
+                ),
+                description=SKILLS_ANALYSIS_PROMPT.format(
+                    candidate_works_json=json.dumps(
+                        [
+                            work.model_dump(mode="json")
+                            for work in context.cv_data.works
+                        ],
+                        indent=2,
+                    ),
+                    candidate_skills_json=json.dumps(context.cv_data.skills, indent=2),
+                    vacancy_json=vacancy_json,
+                ),
+                expected_output=SKILLS_ANALYSIS_EXPECTED_OUTPUT,
+                model_type=SkillsMatchOutput,
+                run_id=run_id,
+            )
+            other_future = executor.submit(
+                self._run_structured_task,
+                stage="analyze_other_factors",
+                operation="other factors analysis",
+                agent=self._task_agent(
+                    role="Other Factors Analyst",
+                    goal="Evaluate explicit non-skill match factors such as education, location, salary, and gender.",
+                    backstory="You are an expert HR assistant specializing in evaluating candidate fit for job vacancies.",
+                    max_execution_time=60,
+                ),
+                description=OTHER_FACTORS_ANALYSIS_PROMPT.format(
+                    candidate_education=context.cv_data.education_qualification,
+                    candidate_location=context.cv_data.address,
+                    candidate_salary_json=json.dumps(
+                        (
+                            context.cv_data.salary_expectation.model_dump(mode="json")
+                            if context.cv_data.salary_expectation
+                            else None
+                        ),
+                        indent=2,
+                    ),
+                    candidate_gender=context.cv_data.gender,
+                    vacancy_json=vacancy_json,
+                ),
+                expected_output=OTHER_FACTORS_ANALYSIS_EXPECTED_OUTPUT,
+                model_type=OtherFactorsOutput,
+                run_id=run_id,
+            )
+            criteria_future = executor.submit(
+                self._run_structured_task,
+                stage="analyze_criteria_grid",
+                operation="criteria grid analysis",
+                agent=self._task_agent(
+                    role="Criteria Grid Analyst",
+                    goal="Create a concise criteria-by-criteria candidate-vacancy fit grid.",
+                    backstory="You are an expert HR assistant specializing in evaluating candidate fit for job vacancies.",
+                    max_execution_time=75,
+                ),
+                description=CRITERIA_GRID_ANALYSIS_PROMPT.format(
+                    cv_json=cv_json,
+                    vacancy_json=vacancy_json,
+                ),
+                expected_output=CRITERIA_GRID_ANALYSIS_EXPECTED_OUTPUT,
+                model_type=CriteriaGridOutput,
+                run_id=run_id,
+            )
+
+            fallback = self._fallback_analyst_output(context)
+            try:
+                exp_des_analysis = exp_future.result()
+            except (ValidationError, ValueError):
+                exp_des_analysis = ExperienceAndDesignationAnalysis(
+                    experience=fallback.experience,
+                    designation_role=fallback.designation_role,
                 )
-                + "\n\nBase the summary on the structured analyst output provided by the previous task."
-            ),
-            expected_output=MATCH_SUMMARY_EXPECTED_OUTPUT,
-            agent=summarizer,
-            context=[analyst_task],
-            output_pydantic=MatchSummaryOutput,
+            try:
+                skills_analysis = skills_future.result()
+            except (ValidationError, ValueError):
+                skills_analysis = fallback.skills
+            try:
+                other_factors_analysis = other_future.result()
+            except (ValidationError, ValueError):
+                other_factors_analysis = fallback.other_factors
+            try:
+                criteria_grid_analysis = criteria_future.result()
+            except (ValidationError, ValueError):
+                criteria_grid_analysis = CriteriaGridOutput()
+
+        analyst_output = self._combine_analyst_output(
+            exp_des_analysis, skills_analysis, other_factors_analysis
         )
 
-        crew = Crew(
-            agents=[analyst, summarizer],
-            tasks=[analyst_task, summary_task],
-            process=Process.sequential,
-            verbose=False,
-        )
-        self._kickoff_with_limits(crew, operation="cv matching")
-
         try:
-            analyst_output = _load_task_output_model(analyst_task.output, MatchAnalystOutput)
-        except (ValidationError, ValueError):
-            analyst_output = self._fallback_analyst_output(context)
-        try:
-            summary_output = _load_task_output_model(summary_task.output, MatchSummaryOutput)
+            summary_output = self._run_structured_task(
+                stage="analyze_overall_fit",
+                operation="overall fit analysis",
+                agent=self._task_agent(
+                    role="Overall Fit Synthesizer",
+                    goal="Synthesize completed branch analyses into final recruiter-facing guidance.",
+                    backstory=(
+                        "You synthesize structured fit analysis into practical hiring "
+                        "guidance without overstating certainty or inventing evidence."
+                    ),
+                    max_execution_time=75,
+                ),
+                description=OVERALL_ANALYSIS_PROMPT.format(
+                    cv_json=cv_json,
+                    vacancy_json=vacancy_json,
+                    experience_designation_json=exp_des_analysis.model_dump_json(
+                        indent=2
+                    ),
+                    skills_json=skills_analysis.model_dump_json(indent=2),
+                    other_factors_json=other_factors_analysis.model_dump_json(indent=2),
+                    criteria_grid_json=criteria_grid_analysis.model_dump_json(indent=2),
+                ),
+                expected_output=OVERALL_ANALYSIS_EXPECTED_OUTPUT,
+                model_type=MatchSummaryOutput,
+                run_id=run_id,
+            )
         except (ValidationError, ValueError):
             summary_output = self._fallback_summary_output(context, analyst_output)
 
-        return analyst_output, summary_output
+        return analyst_output, summary_output, criteria_grid_analysis

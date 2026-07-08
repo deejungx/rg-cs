@@ -65,7 +65,9 @@ def test_dashboard_counts_structured_candidates_not_raw_uploads(client) -> None:
     assert dashboard_response.json()["candidates_total"] == 0
 
 
-def test_job_opening_extraction_from_pasted_json_stores_annotated_artifacts(client, monkeypatch) -> None:
+def test_job_opening_extraction_from_pasted_json_stores_annotated_artifacts(
+    client, monkeypatch
+) -> None:
     monkeypatch.setattr(settings, "model_provider", "mock")
 
     response = client.post(

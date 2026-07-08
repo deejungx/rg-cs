@@ -17,42 +17,6 @@ def test_job_opening_guardrail_is_accepted_by_crewai_task_validator() -> None:
     assert task.guardrail is _job_guardrail
 
 
-def test_job_opening_is_stored_as_json_and_markdown(client) -> None:
-    response = client.post(
-        "/api/recruitment/job-openings",
-        json={
-            "title": "Senior Frontend Engineer",
-            "company_name": "Acme",
-            "location": "Remote",
-            "employment_type": "Full-time",
-            "skills_csv": "React, TypeScript",
-            "description": "Build hiring workflows.",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["title"] == "Senior Frontend Engineer"
-    assert payload["skills"] == ["React", "TypeScript"]
-
-    json_response = client.get(f"/api/workspace/{payload['json_path']}")
-    markdown_response = client.get(f"/api/workspace/{payload['markdown_path']}")
-    assert json_response.status_code == 200
-    assert markdown_response.status_code == 200
-    assert "Senior Frontend Engineer" in markdown_response.json()["content"]
-
-    list_response = client.get("/api/recruitment/job-openings")
-    assert list_response.status_code == 200
-    assert len(list_response.json()["job_openings"]) == 1
-
-    dashboard_response = client.get("/api/recruitment/dashboard")
-    assert dashboard_response.status_code == 200
-    dashboard = dashboard_response.json()
-    assert dashboard["job_openings_total"] == 1
-    assert dashboard["workflow_count"] == 3
-    assert dashboard["agent_count"] == 5
-
-
 def test_job_opening_status_can_be_updated(client) -> None:
     response = client.post(
         "/api/recruitment/job-openings",

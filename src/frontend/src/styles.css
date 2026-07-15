@@ -811,3 +811,576 @@
     transform: translateX(1rem);
   }
 }
+
+@layer components {
+  .main-panel:has(.match-queue-page) {
+    @apply max-w-[96rem];
+  }
+
+  .match-queue-page {
+    @apply grid gap-6 text-slate-700;
+  }
+
+  .queue-topbar {
+    @apply flex flex-wrap items-end justify-between gap-5 border-b border-stone-200 pb-5;
+  }
+
+  .queue-topbar h1 {
+    @apply mt-1 text-3xl font-semibold tracking-normal text-slate-950;
+  }
+
+  .queue-toolbar {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .job-selector,
+  .remaining-status,
+  .toolbar-button {
+    @apply inline-flex h-10 items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 text-sm font-medium text-slate-700;
+  }
+
+  .job-selector {
+    @apply relative pr-2;
+  }
+
+  .job-selector select {
+    @apply cursor-pointer appearance-none bg-transparent pr-5 font-semibold text-slate-900 outline-none;
+  }
+
+  .job-selector > svg:last-child {
+    @apply pointer-events-none absolute right-2;
+  }
+
+  .remaining-status {
+    @apply border-transparent bg-transparent px-2 text-slate-500;
+  }
+
+  .remaining-status > span {
+    @apply size-2 rounded-full bg-teal-600;
+  }
+
+  .toolbar-button {
+    @apply transition hover:border-stone-400 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .toolbar-button:focus-visible,
+  .decision-button:focus-visible,
+  .analysis-button:focus-visible,
+  .text-button:focus-visible,
+  .icon-button:focus-visible,
+  .filter-fields select:focus-visible,
+  .job-selector:focus-within {
+    @apply outline-none ring-2 ring-teal-600 ring-offset-2;
+  }
+
+  .filters-trigger {
+    @apply xl:hidden;
+  }
+
+  .queue-layout {
+    @apply grid items-start gap-5 xl:grid-cols-[12rem_minmax(28rem,1fr)_19rem];
+  }
+
+  .queue-stats {
+    @apply grid grid-cols-2 gap-3 lg:grid-cols-4;
+  }
+
+  .queue-stat {
+    @apply flex min-h-20 items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 shadow-[0_2px_10px_rgba(40,52,48,0.03)];
+  }
+
+  .queue-stat-icon {
+    @apply grid size-9 shrink-0 place-items-center rounded-lg bg-stone-100 text-slate-600;
+  }
+
+  .queue-stat.shortlisted .queue-stat-icon {
+    @apply bg-[#e4efe6] text-[#315c47];
+  }
+
+  .queue-stat.later .queue-stat-icon {
+    @apply bg-[#fff1df] text-[#80552e];
+  }
+
+  .queue-stat.passed .queue-stat-icon {
+    @apply bg-slate-100 text-slate-600;
+  }
+
+  .animated-count {
+    @apply relative block h-7 min-w-8 overflow-hidden text-2xl font-semibold leading-7 text-slate-950;
+  }
+
+  .animated-count > span {
+    @apply block;
+  }
+
+  .queue-stat > div > span:last-child {
+    @apply mt-0.5 block text-xs font-medium text-slate-500;
+  }
+
+  .queue-filters {
+    @apply hidden xl:block;
+  }
+
+  .queue-filters-inner {
+    @apply grid gap-5;
+  }
+
+  .queue-section-heading,
+  .queue-section-heading > div,
+  .filter-heading-actions {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .queue-section-heading > div:first-child {
+    @apply justify-start;
+  }
+
+  .queue-section-heading h2 {
+    @apply text-sm font-semibold text-slate-900;
+  }
+
+  .text-button {
+    @apply rounded px-1 py-1 text-xs font-semibold text-teal-800 hover:text-teal-950;
+  }
+
+  .filter-fields {
+    @apply grid gap-4;
+  }
+
+  .filter-fields label {
+    @apply relative block;
+  }
+
+  .filter-fields label > span {
+    @apply mb-1.5 text-xs font-semibold text-slate-500;
+  }
+
+  .filter-fields select {
+    @apply h-10 w-full appearance-none rounded-lg border border-stone-300 bg-white px-3 pr-8 text-sm text-slate-700 outline-none;
+  }
+
+  .filter-fields label > svg {
+    @apply pointer-events-none absolute bottom-3 right-3 text-slate-400;
+  }
+
+  .queue-main {
+    @apply min-w-0;
+  }
+
+  .candidate-review-card,
+  .insight-panel,
+  .queue-empty {
+    @apply rounded-2xl border border-stone-200 bg-white shadow-[0_4px_18px_rgba(40,52,48,0.04)];
+  }
+
+  .candidate-review-card {
+    @apply cursor-grab touch-none overflow-hidden;
+  }
+
+  .candidate-header {
+    @apply flex items-start justify-between gap-5 px-6 py-6 sm:px-8;
+  }
+
+  .candidate-identity {
+    @apply flex min-w-0 items-center gap-4;
+  }
+
+  .candidate-avatar {
+    @apply grid size-14 shrink-0 place-items-center rounded-full bg-[#dce9df] text-base font-bold text-[#315c47];
+  }
+
+  .candidate-identity h2 {
+    @apply truncate text-xl font-semibold text-slate-950;
+  }
+
+  .candidate-identity p {
+    @apply mt-0.5 text-sm font-medium text-slate-600;
+  }
+
+  .candidate-identity span {
+    @apply mt-2 flex items-center gap-1.5 text-xs text-slate-500;
+  }
+
+  .candidate-identity i {
+    @apply mx-0.5 not-italic text-stone-300;
+  }
+
+  .match-score {
+    @apply shrink-0 text-right;
+  }
+
+  .match-score strong {
+    @apply block text-3xl font-semibold leading-none text-[#315c47];
+  }
+
+  .match-score span {
+    @apply mt-1 block text-xs font-semibold uppercase tracking-wider text-slate-500;
+  }
+
+  .why-matched {
+    @apply border-y border-stone-200 bg-[#fbfcfa] px-6 py-6 sm:px-8;
+  }
+
+  .why-heading {
+    @apply flex items-center gap-3;
+  }
+
+  .why-heading > span,
+  .insight-title > span {
+    @apply grid size-8 shrink-0 place-items-center rounded-lg bg-[#e7f0e8] text-[#315c47];
+  }
+
+  .why-heading h3,
+  .coverage-section h3,
+  .watchouts h3 {
+    @apply text-sm font-semibold text-slate-950;
+  }
+
+  .why-heading p {
+    @apply mt-0.5 text-xs text-slate-500;
+  }
+
+  .evidence-list {
+    @apply mt-5 grid gap-3;
+  }
+
+  .evidence-item {
+    @apply grid grid-cols-[2rem_1fr_auto] items-start gap-3 rounded-xl border border-stone-200 bg-white p-3.5;
+  }
+
+  .evidence-icon {
+    @apply grid size-8 place-items-center rounded-lg bg-stone-100 text-slate-600;
+  }
+
+  .evidence-item p {
+    @apply pt-1 text-sm leading-6 text-slate-700;
+  }
+
+  .requirement-tag {
+    @apply mt-1 rounded-md bg-slate-100 px-2 py-1 text-[0.68rem] font-semibold text-slate-500;
+  }
+
+  .decision-footer {
+    @apply px-6 py-5 sm:px-8;
+  }
+
+  .decision-actions {
+    @apply grid grid-cols-3 gap-3;
+  }
+
+  .decision-button {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border px-3 text-sm font-semibold transition disabled:opacity-50;
+  }
+
+  .decision-button.pass {
+    @apply border-stone-300 bg-white text-slate-700 hover:bg-stone-50;
+  }
+
+  .decision-button.later {
+    @apply border-[#e7c9a9] bg-[#fffaf4] text-[#80552e] hover:bg-[#fff4e8];
+  }
+
+  .decision-button.shortlist {
+    @apply border-[#3d7258] bg-[#3d7258] text-white hover:bg-[#315c47];
+  }
+
+  .interaction-hint {
+    @apply mt-3 flex items-center justify-center gap-1.5 text-xs text-slate-400;
+  }
+
+  .insight-panel {
+    @apply overflow-hidden p-5;
+  }
+
+  .insight-title {
+    @apply flex items-center gap-3 border-b border-stone-200 pb-4;
+  }
+
+  .insight-title p {
+    @apply text-[0.68rem] font-semibold uppercase tracking-wider text-teal-700;
+  }
+
+  .insight-title h2 {
+    @apply mt-0.5 text-base font-semibold text-slate-950;
+  }
+
+  .confidence-block {
+    @apply border-b border-stone-200 py-5;
+  }
+
+  .confidence-block > div:first-child,
+  .coverage-item > div:first-child {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .confidence-block span,
+  .coverage-item span {
+    @apply text-xs font-medium text-slate-500;
+  }
+
+  .confidence-block strong {
+    @apply inline-flex items-center gap-1 text-xs font-semibold text-[#315c47];
+  }
+
+  .confidence-track,
+  .coverage-track {
+    @apply mt-2 h-1.5 overflow-hidden rounded-full bg-stone-200;
+  }
+
+  .confidence-track > span,
+  .coverage-track > span {
+    @apply block h-full rounded-full bg-[#5e8c70];
+  }
+
+  .coverage-section {
+    @apply border-b border-stone-200 py-5;
+  }
+
+  .coverage-list {
+    @apply mt-4 grid gap-4;
+  }
+
+  .coverage-item strong {
+    @apply text-xs font-semibold text-slate-800;
+  }
+
+  .coverage-total {
+    @apply mt-5 flex items-center gap-2 rounded-lg bg-[#eef5ef] px-3 py-2.5 text-xs text-[#315c47];
+  }
+
+  .coverage-total strong {
+    @apply font-bold;
+  }
+
+  .watchouts {
+    @apply py-5;
+  }
+
+  .watchouts h3 {
+    @apply flex items-center gap-2;
+  }
+
+  .watchouts h3 svg {
+    @apply text-[#9a642d];
+  }
+
+  .watchouts ul {
+    @apply mt-3 grid gap-2 pl-5 text-xs leading-5 text-slate-600;
+  }
+
+  .watchouts li {
+    @apply list-disc marker:text-[#bf8a54];
+  }
+
+  .analysis-button {
+    @apply flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-stone-300 bg-white text-sm font-semibold text-slate-700 hover:bg-stone-50;
+  }
+
+  .analysis-arrow {
+    @apply rotate-180;
+  }
+
+  .queue-empty {
+    @apply grid min-h-[28rem] place-content-center justify-items-center gap-2 p-8 text-center;
+  }
+
+  .queue-empty svg {
+    @apply text-teal-700;
+  }
+
+  .queue-empty h2 {
+    @apply text-lg font-semibold text-slate-950;
+  }
+
+  .queue-empty p {
+    @apply text-sm text-slate-500;
+  }
+
+  .filter-drawer-backdrop,
+  .queue-modal-backdrop {
+    @apply fixed inset-0 z-50 bg-slate-950/40;
+  }
+
+  .filter-drawer {
+    @apply absolute bottom-0 left-0 top-0 w-full max-w-xs overflow-y-auto bg-stone-50 p-5 shadow-xl;
+  }
+
+  .icon-button {
+    @apply grid size-10 shrink-0 place-items-center rounded-lg border border-stone-300 bg-white text-slate-600 hover:bg-stone-50;
+  }
+
+  .queue-modal-backdrop {
+    @apply grid place-items-center p-4;
+  }
+
+  .decision-feedback {
+    @apply fixed bottom-6 right-6 z-50 flex min-h-12 items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-slate-800 shadow-lg;
+  }
+
+  .decision-feedback > span {
+    @apply grid size-7 place-items-center rounded-lg bg-stone-100 text-slate-600;
+  }
+
+  .decision-feedback.shortlist > span {
+    @apply bg-[#e4efe6] text-[#315c47];
+  }
+
+  .decision-feedback.review_later > span {
+    @apply bg-[#fff1df] text-[#80552e];
+  }
+
+  .decision-feedback.undo > span {
+    @apply bg-sky-50 text-sky-700;
+  }
+
+  .queue-modal {
+    @apply max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-stone-200 bg-white p-6 shadow-xl;
+  }
+
+  .queue-modal > header {
+    @apply flex items-start justify-between gap-5 border-b border-stone-200 pb-5;
+  }
+
+  .queue-modal h2 {
+    @apply mt-1 text-xl font-semibold text-slate-950;
+  }
+
+  .queue-modal header p {
+    @apply mt-2 max-w-2xl text-sm leading-6 text-slate-600;
+  }
+
+  .analysis-grid {
+    @apply mt-5 grid gap-6 md:grid-cols-2;
+  }
+
+  .analysis-grid section {
+    @apply grid content-start gap-3;
+  }
+
+  .analysis-grid h3 {
+    @apply text-sm font-semibold text-slate-950;
+  }
+
+  .analysis-grid article {
+    @apply flex gap-3 rounded-lg border border-stone-200 bg-stone-50 p-3 text-sm leading-5 text-slate-600;
+  }
+
+  .analysis-grid article > svg {
+    @apply mt-0.5 shrink-0 text-teal-700;
+  }
+
+  .analysis-grid article strong {
+    @apply block text-xs font-semibold text-slate-800;
+  }
+
+  .analysis-grid article p {
+    @apply mt-1;
+  }
+
+  .modal-subheading {
+    @apply mt-3;
+  }
+
+  @media (max-width: 1279px) {
+    .queue-layout {
+      @apply grid-cols-1;
+    }
+
+    .insight-panel {
+      @apply grid grid-cols-2 gap-x-6;
+    }
+
+    .insight-title,
+    .analysis-button {
+      @apply col-span-2;
+    }
+
+    .confidence-block {
+      @apply border-b-0;
+    }
+
+    .coverage-section {
+      @apply border-b-0;
+    }
+  }
+
+  @media (max-width: 639px) {
+    .queue-toolbar,
+    .job-selector,
+    .remaining-status {
+      @apply w-full;
+    }
+
+    .toolbar-button {
+      @apply flex-1;
+    }
+
+    .queue-stat {
+      @apply min-h-16 px-3;
+    }
+
+    .queue-stat-icon {
+      @apply size-8;
+    }
+
+    .animated-count {
+      @apply text-xl;
+    }
+
+    .decision-feedback {
+      @apply bottom-4 left-4 right-4;
+    }
+
+    .candidate-header {
+      @apply px-5;
+    }
+
+    .candidate-avatar {
+      @apply size-12;
+    }
+
+    .match-score strong {
+      @apply text-2xl;
+    }
+
+    .why-matched,
+    .decision-footer {
+      @apply px-5;
+    }
+
+    .evidence-item {
+      @apply grid-cols-[2rem_1fr];
+    }
+
+    .requirement-tag {
+      @apply col-start-2 w-fit;
+    }
+
+    .decision-actions {
+      @apply grid-cols-1;
+    }
+
+    .insight-panel {
+      @apply block;
+    }
+
+    .confidence-block,
+    .coverage-section {
+      @apply border-b border-stone-200;
+    }
+
+    .analysis-button {
+      @apply mt-1;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .candidate-review-card,
+  .decision-button,
+  .toolbar-button {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0ms !important;
+  }
+}

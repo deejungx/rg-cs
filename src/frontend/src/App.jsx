@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import MatchQueue from "./MatchQueue";
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -6,7 +7,7 @@ const navItems = [
   { id: "dashboard", label: "Dashboard", icon: "D" },
   { id: "candidates", label: "Candidates", icon: "C" },
   { id: "jobs", label: "Job Openings", icon: "J" },
-  { id: "matching", label: "Matching", icon: "M" },
+  { id: "matching", label: "Match Queue", icon: "M" },
   { id: "settings", label: "Settings", icon: "S" },
 ];
 
@@ -1722,7 +1723,7 @@ export default function App() {
       />
     ),
     jobs: <JobOpeningsPage jobs={jobs} refreshJobs={refreshJobs} refreshDashboard={refreshDashboard} />,
-    matching: <MatchingPage candidates={candidates} jobs={jobs} refreshDashboard={refreshDashboard} />,
+    matching: <MatchQueue />,
     settings: <SettingsPage />,
   }[activePage];
 
